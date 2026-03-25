@@ -96,6 +96,11 @@ AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
 
 
 def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
+    workdir = instance.get('workdir')
+    if isinstance(workdir, str) and workdir.strip():
+        # Custom datasets (e.g., Scale-SWE) may provide an explicit in-container workdir.
+        # OpenHands later does `cd /workspace/{workspace_dir_name}`, so keep only the basename.
+        return os.path.basename(workdir.rstrip('/'))
     if DATASET_TYPE == 'SWE-bench-Live':
         return instance.instance_id
     else:
@@ -169,9 +174,15 @@ logger.info(f'Default docker image prefix: {DEFAULT_DOCKER_IMAGE_PREFIX}')
 
 
 def get_instance_docker_image(
-    instance_id: str,
+    instance: pd.Series,
     swebench_official_image: bool = False,
 ) -> str:
+    image_url = instance.get('image_url')
+    if isinstance(image_url, str) and image_url.strip():
+        # Allow custom datasets to provide their own per-instance image naming.
+        return image_url.strip().lower()
+
+    instance_id = instance['instance_id']
     if swebench_official_image:
         # Official SWE-Bench image
         # swebench/sweb.eval.x86_64.django_1776_django-11333:v1
@@ -204,7 +215,7 @@ def get_config(
     use_swebench_official_image = DATASET_TYPE != 'SWE-Gym'
 
     base_container_image = get_instance_docker_image(
-        instance['instance_id'],
+        instance,
         swebench_official_image=use_swebench_official_image,
     )
     logger.info(
