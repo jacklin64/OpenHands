@@ -82,6 +82,9 @@ def set_dataset_type(dataset_name: str) -> str:
         DATASET_TYPE = 'SWE-bench-Live'
     elif 'swe-rebench' in name_lower:
         DATASET_TYPE = 'SWE-rebench'
+    elif 'scale-swe' in name_lower:
+        # e.g. AweAI-Team/Scale-SWE or __root__AweAI-Team__Scale-SWE-train
+        DATASET_TYPE = 'Scale-SWE'
     elif 'multimodal' in name_lower:
         DATASET_TYPE = 'Multimodal'
     else:
@@ -107,8 +110,37 @@ def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
         return f'{instance.repo}__{instance.version}'.replace('/', '__')
 
 
+def _get_instance_base_commit(instance: pd.Series) -> str:
+    """SWE-bench uses base_commit; Scale-SWE HF rows often only have parent_commit."""
+    bc = instance.get('base_commit')
+    if bc is not None and not pd.isna(bc) and str(bc).strip():
+        return str(bc).strip()
+    pc = instance.get('parent_commit')
+    if pc is not None and not pd.isna(pc) and str(pc).strip():
+        return str(pc).strip()
+    raise KeyError(
+        'instance has neither base_commit nor parent_commit (need one for git diff)'
+    )
+
+
+def _instance_for_prompt(instance: pd.Series) -> pd.Series:
+    """Ensure templates see base_commit when the dataset only provides parent_commit."""
+    out = instance.copy()
+    if (
+        pd.isna(out.get('base_commit'))
+        or not str(out.get('base_commit') or '').strip()
+    ) and (
+        out.get('parent_commit') is not None
+        and not pd.isna(out.get('parent_commit'))
+        and str(out.get('parent_commit')).strip()
+    ):
+        out['base_commit'] = str(out['parent_commit']).strip()
+    return out
+
+
 def get_instruction(instance: pd.Series, metadata: EvalMetadata) -> MessageAction:
     workspace_dir_name = _get_swebench_workspace_dir_name(instance)
+    instance = _instance_for_prompt(instance)
     mode = metadata.details['mode']
     llm_model = metadata.llm_config.model
 
@@ -335,6 +367,8 @@ def initialize_runtime(
             entry_script_path = 'instance_swe_entry_live.sh'
         elif DATASET_TYPE == 'SWE-rebench':
             entry_script_path = 'instance_swe_entry_rebench.sh'
+        elif DATASET_TYPE == 'Scale-SWE':
+            entry_script_path = 'instance_scale_swe_entry.sh'
         else:
             entry_script_path = 'instance_swe_entry.sh'
         runtime.copy_to(
@@ -418,9 +452,14 @@ def initialize_runtime(
             obs = runtime.run_action(action)
             logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
-    if DATASET_TYPE != 'Multimodal' and DATASET_TYPE != 'SWE-bench-Live':
+    if DATASET_TYPE not in (
+        'Multimodal',
+        'SWE-bench-Live',
+        'Scale-SWE',
+    ):
         # Only for non-multimodal datasets, we need to activate the testbed environment for Python
         # SWE-Bench multimodal datasets and SWE-bench-Live are not using the testbed environment
+        # Scale-SWE images often use a system/venv Python whose path does not contain "testbed"
         action = CmdRunAction(command='which python')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
@@ -552,9 +591,10 @@ def complete_runtime(
 
     n_retries = 0
     git_patch = None
+    base_commit = _get_instance_base_commit(instance)
     while n_retries < 5:
         action = CmdRunAction(
-            command=f'git diff --no-color --cached {instance["base_commit"]} > patch.diff'
+            command=f'git diff --no-color --cached {base_commit} > patch.diff'
         )
         action.set_hard_timeout(max(300 + 100 * n_retries, 600))
         logger.info(action, extra={'msg_type': 'ACTION'})
