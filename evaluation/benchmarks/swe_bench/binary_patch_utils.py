@@ -40,9 +40,15 @@ def remove_binary_files_from_git():
     """
     return """
     for file in $(git status --porcelain | grep -E "^(M| M|\\?\\?|A| A)" | cut -c4-); do
-        if [ -f "$file" ] && (file "$file" | grep -q "executable" || git check-attr binary "$file" | grep -q "binary: set"); then
-            git rm -f "$file" 2>/dev/null || rm -f "$file"
-            echo "Removed: $file"
+        if [ -f "$file" ]; then
+            desc=$(file -b "$file" 2>/dev/null || true)
+            if git check-attr binary "$file" 2>/dev/null | grep -q "binary: set"; then
+                git rm -f "$file" 2>/dev/null || rm -f "$file"
+                echo "Removed: $file"
+            elif echo "$desc" | grep -q "executable" && ! echo "$desc" | grep -qi "text executable"; then
+                git rm -f "$file" 2>/dev/null || rm -f "$file"
+                echo "Removed: $file"
+            fi
         fi
     done
     """.strip()
