@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import os
+import shlex
 import tempfile
 from typing import Any, Literal
 
@@ -70,6 +71,29 @@ BenchMode = Literal['swe', 'swt', 'swt-ci']
 # Global variable to track dataset type
 DATASET_TYPE = 'SWE-bench'
 
+# Pre-agent git snapshot + strip future refs (AweAgent PreAgentSetup / nemo_skills swebench.py).
+# Snapshot state before the agent runs, then remove other refs/reflog so the agent cannot
+# recover "solution" commits from git history.
+_GIT_COMMIT_PRE_AGENT = (
+    'git config user.email "pre-agent@awe-agent.local" && '
+    'git config user.name "Pre-Agent" && '
+    'git add -A && '
+    'git commit -m "pre-agent commit"'
+)
+_REMOVE_FUTURE_COMMITS = (
+    'current_branch=$(git rev-parse --abbrev-ref HEAD) && '
+    'git for-each-ref --format="%(refname)" | while read ref; do '
+    'if [[ "$ref" == refs/heads/* ]]; then '
+    'branch_name="${ref#refs/heads/}"; '
+    'if [[ "$branch_name" != "$current_branch" ]]; then '
+    'git branch -f "$branch_name" HEAD; '
+    'fi; '
+    'else git update-ref "$ref" HEAD 2>/dev/null || true; fi; done && '
+    'git stash clear 2>/dev/null || true && '
+    'git reflog expire --expire=now --all 2>/dev/null || true && '
+    'git gc --prune=now 2>/dev/null || true'
+)
+
 
 def set_dataset_type(dataset_name: str) -> str:
     """Set dataset type based on dataset name."""
@@ -136,6 +160,63 @@ def _instance_for_prompt(instance: pd.Series) -> pd.Series:
     ):
         out['base_commit'] = str(out['parent_commit']).strip()
     return out
+
+
+def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Series) -> str | None:
+    """Shell snippet to align the task repo with the dataset (Scale-SWE only).
+
+    After ``instance_scale_swe_entry.sh`` copies the repo into ``/workspace/<name>``, the image
+    default ``HEAD`` may still point at a newer commit than the instance's bug snapshot.
+
+    - If the row has non-empty ``pre_commands`` (string, or Beyond-style dict with
+      ``execute_command.commands``), run that under ``cd /workspace/<name> && ...``.
+    - Otherwise run ``git checkout`` to ``base_commit`` / ``parent_commit``.
+
+    Returns ``None`` when no Scale-SWE prep should run.
+    """
+    if DATASET_TYPE != 'Scale-SWE':
+        return None
+
+    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    pre = instance.get('pre_commands')
+
+    if pre is not None and not pd.isna(pre):
+        if isinstance(pre, dict):
+            exec_cmd = pre.get('execute_command')
+            if isinstance(exec_cmd, dict):
+                raw_cmds = exec_cmd.get('commands', [])
+                cmds = [
+                    str(c).strip()
+                    for c in raw_cmds
+                    if c is not None and not pd.isna(c) and str(c).strip()
+                ]
+                if cmds:
+                    chained = ' && '.join(cmds)
+                    return f'cd {ws} && {chained}'
+        if isinstance(pre, str):
+            s = pre.strip().removesuffix('\\n')
+            if s:
+                return f'cd {ws} && {s}'
+
+    try:
+        base = _get_instance_base_commit(instance)
+    except KeyError:
+        return None
+    if not str(base).strip():
+        return None
+    return f'cd {ws} && git checkout {shlex.quote(str(base).strip())}'
+
+
+def _scale_swe_pre_agent_git_commands(workspace_dir_name: str) -> list[str]:
+    """Commands to run in the task repo after checkout/pre_commands (Scale-SWE only)."""
+    if DATASET_TYPE != 'Scale-SWE':
+        return []
+    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    # Subshell + ``|| true`` only for the commit (empty tree); a failed ``cd`` must not be masked.
+    return [
+        f'cd {ws} && ( {_GIT_COMMIT_PRE_AGENT} || true )',
+        f'cd {ws} && {_REMOVE_FUTURE_COMMITS}',
+    ]
 
 
 def get_instruction(instance: pd.Series, metadata: EvalMetadata) -> MessageAction:
@@ -411,6 +492,29 @@ def initialize_runtime(
         obs.exit_code == 0,
         f'Failed to cd to /workspace/{workspace_dir_name}: {str(obs)}',
     )
+
+    scale_swe_prep = _get_scale_swe_repo_prep_command(workspace_dir_name, instance)
+    if scale_swe_prep:
+        action = CmdRunAction(command=scale_swe_prep)
+        action.set_hard_timeout(600)
+        logger.info(action, extra={'msg_type': 'ACTION'})
+        obs = runtime.run_action(action)
+        logger.info(obs, extra={'msg_type': 'OBSERVATION'})
+        assert_and_raise(
+            obs.exit_code == 0,
+            f'Failed Scale-SWE workspace repo prep: {str(obs)}',
+        )
+
+    for pre_agent_cmd in _scale_swe_pre_agent_git_commands(workspace_dir_name):
+        action = CmdRunAction(command=pre_agent_cmd)
+        action.set_hard_timeout(600)
+        logger.info(action, extra={'msg_type': 'ACTION'})
+        obs = runtime.run_action(action)
+        logger.info(obs, extra={'msg_type': 'OBSERVATION'})
+        assert_and_raise(
+            obs.exit_code == 0,
+            f'Failed Scale-SWE pre-agent git step: {str(obs)}',
+        )
 
     action = CmdRunAction(command='git reset --hard')
     action.set_hard_timeout(600)
