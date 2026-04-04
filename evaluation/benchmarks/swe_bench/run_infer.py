@@ -582,10 +582,14 @@ def initialize_runtime(
         'Multimodal',
         'SWE-bench-Live',
         'Scale-SWE',
+        'SWE-rebench',
+        'SWE-rebench-V2',
     ):
         # Only for non-multimodal datasets, we need to activate the testbed environment for Python
         # SWE-Bench multimodal datasets and SWE-bench-Live are not using the testbed environment
         # Scale-SWE images often use a system/venv Python whose path does not contain "testbed"
+        # SWE-rebench / V2 mix Python, Node, etc.; many instances have no ``python`` on PATH (only
+        # node / python3 / conda layouts that do not match classic SWE-bench ``testbed`` paths.
         action = CmdRunAction(command='which python')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
