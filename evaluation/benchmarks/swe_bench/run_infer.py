@@ -104,6 +104,8 @@ def set_dataset_type(dataset_name: str) -> str:
         DATASET_TYPE = 'SWE-Gym'
     elif 'swe-bench-live' in name_lower:
         DATASET_TYPE = 'SWE-bench-Live'
+    elif 'swe-rebench-v2' in name_lower:
+        DATASET_TYPE = 'SWE-rebench-V2'
     elif 'swe-rebench' in name_lower:
         DATASET_TYPE = 'SWE-rebench'
     elif 'scale-swe' in name_lower:
@@ -130,6 +132,18 @@ def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
         return os.path.basename(workdir.rstrip('/'))
     if DATASET_TYPE == 'SWE-bench-Live':
         return instance.instance_id
+    if DATASET_TYPE == 'SWE-rebench-V2':
+        # HF SWE-rebench-V2 rows omit ``version``; keep workspace name in sync with
+        # ``instance_swe_entry_rebenchv2.sh`` (repo__version when present, else instance_id).
+        ver = instance.get('version')
+        if (
+            ver is not None
+            and not pd.isna(ver)
+            and str(ver).strip()
+            and str(ver).strip().lower() != 'nan'
+        ):
+            return f'{instance.repo}__{ver}'.replace('/', '__')
+        return str(instance['instance_id']).replace('/', '__')
     else:
         return f'{instance.repo}__{instance.version}'.replace('/', '__')
 
@@ -306,6 +320,8 @@ def get_instance_docker_image(
             docker_image_prefix = 'docker.io/swebench/'
         elif DATASET_TYPE == 'SWE-rebench':
             docker_image_prefix = 'docker.io/swerebench/'
+        elif DATASET_TYPE == 'SWE-rebench-V2':
+            docker_image_prefix = 'docker.io/swerebenchv2/'
         repo, name = instance_id.split('__')
         image_name = f'{docker_image_prefix.rstrip("/")}/sweb.eval.x86_64.{repo}_1776_{name}:latest'.lower()
         logger.debug(f'Using official SWE-Bench image: {image_name}')
@@ -446,6 +462,8 @@ def initialize_runtime(
         # inject the instance swe entry
         if DATASET_TYPE == 'SWE-bench-Live':
             entry_script_path = 'instance_swe_entry_live.sh'
+        elif DATASET_TYPE == 'SWE-rebench-V2':
+            entry_script_path = 'instance_swe_entry_rebenchv2.sh'
         elif DATASET_TYPE == 'SWE-rebench':
             entry_script_path = 'instance_swe_entry_rebench.sh'
         elif DATASET_TYPE == 'Scale-SWE':
@@ -539,9 +557,13 @@ def initialize_runtime(
             setup_commands.append(MAP_REPO_TO_INSTALL[instance['repo']])
 
         # Run pre-install set up if provided
-        install = MAP_VERSION_TO_INSTALL.get(instance['repo'], {}).get(
-            instance['version'], []
-        )
+        _ver = instance.get('version')
+        if _ver is None or pd.isna(_ver) or not str(_ver).strip():
+            install: list | dict = []
+        else:
+            install = MAP_VERSION_TO_INSTALL.get(instance['repo'], {}).get(
+                _ver, []
+            )
         if 'pre_install' in install:
             for pre_install in install['pre_install']:
                 setup_commands.append(pre_install)
