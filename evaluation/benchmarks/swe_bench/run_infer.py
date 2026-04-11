@@ -132,7 +132,7 @@ def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
         return os.path.basename(workdir.rstrip('/'))
     if DATASET_TYPE == 'SWE-bench-Live':
         return instance.instance_id
-    if DATASET_TYPE == 'SWE-rebench-V2':
+    if (DATASET_TYPE == 'SWE-rebench-V2') or (DATASET_TYPE == 'SWE-rebench'):
         # HF SWE-rebench-V2 rows omit ``version``; keep workspace name in sync with
         # ``instance_swe_entry_rebenchv2.sh`` (repo__version when present, else instance_id).
         ver = instance.get('version')
@@ -188,9 +188,7 @@ def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Serie
 
     Returns ``None`` when no Scale-SWE prep should run.
     """
-    if DATASET_TYPE != 'Scale-SWE':
-        return None
-
+    # if (DATASET_TYPE == 'Scale-SWE') or (DATASET_TYPE == 'SWE-rebench'):
     ws = shlex.quote(f'/workspace/{workspace_dir_name}')
     pre = instance.get('pre_commands')
 
@@ -219,18 +217,21 @@ def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Serie
     if not str(base).strip():
         return None
     return f'cd {ws} && git checkout {shlex.quote(str(base).strip())}'
+    # else:
+    #     return None
 
 
 def _scale_swe_pre_agent_git_commands(workspace_dir_name: str) -> list[str]:
     """Commands to run in the task repo after checkout/pre_commands (Scale-SWE only)."""
-    if DATASET_TYPE != 'Scale-SWE':
-        return []
+    # if (DATASET_TYPE == 'Scale-SWE') or (DATASET_TYPE == 'SWE-rebench'):
     ws = shlex.quote(f'/workspace/{workspace_dir_name}')
     # Subshell + ``|| true`` only for the commit (empty tree); a failed ``cd`` must not be masked.
     return [
         f'cd {ws} && ( {_GIT_COMMIT_PRE_AGENT} || true )',
         f'cd {ws} && {_REMOVE_FUTURE_COMMITS}',
     ]
+    # else:
+    #     return []
 
 
 def get_instruction(instance: pd.Series, metadata: EvalMetadata) -> MessageAction:

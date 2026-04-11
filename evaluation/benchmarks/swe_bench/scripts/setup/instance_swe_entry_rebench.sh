@@ -19,7 +19,15 @@ if [[ -z "$item" ]]; then
 fi
 
 
-WORKSPACE_NAME=$(echo "$item" | jq -r '(.repo | tostring) + "__" + (.version | tostring) | gsub("/"; "__")')
+# HF ``nebius/SWE-rebench`` rows may omit ``version``; match
+# ``_get_swebench_workspace_dir_name`` in run_infer.py and instance_swe_entry_rebenchv2.sh.
+WORKSPACE_NAME=$(echo "$item" | jq -r '
+  if (.version != null) and ((.version | tostring | length) > 0) then
+    ((.repo | tostring) + "__" + (.version | tostring)) | gsub("/"; "__")
+  else
+    (.instance_id | tostring) | gsub("/"; "__")
+  end
+')
 
 echo "WORKSPACE_NAME: $WORKSPACE_NAME"
 
