@@ -54,6 +54,25 @@ DOCKER_IMAGE_PREFIX = os.environ.get('EVAL_DOCKER_IMAGE_PREFIX', '')
 LANGUAGE = os.environ.get('LANGUAGE', 'python')
 logger.info(f'Using docker image prefix: {DOCKER_IMAGE_PREFIX}')
 
+# Mirrors OpenHands ``evaluation/benchmarks/swe_bench/run_infer.py`` for SWE-rebench / V2.
+DATASET_TYPE = 'SWE-bench'
+
+
+def set_dataset_type(dataset_name: str) -> None:
+    """Set global ``DATASET_TYPE`` from HF id, JSON path, or ``SWE_BENCH_DATASET_TYPE``."""
+    global DATASET_TYPE
+    override = os.environ.get('SWE_BENCH_DATASET_TYPE', '').strip()
+    if override:
+        DATASET_TYPE = override
+        logger.info(f'Dataset type from SWE_BENCH_DATASET_TYPE: {DATASET_TYPE}')
+        return
+    name_lower = dataset_name.lower()
+    if 'swe-rebench-v2' in name_lower:
+        DATASET_TYPE = 'SWE-rebench-V2'
+    else:
+        DATASET_TYPE = 'SWE-bench'
+    logger.info(f'Dataset type set to: {DATASET_TYPE}')
+
 
 AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
     'CodeActAgent': codeact_user_response,
@@ -61,11 +80,53 @@ AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
 
 
 def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
+    workdir = instance.get('workdir')
+    if isinstance(workdir, str) and workdir.strip():
+        return os.path.basename(workdir.rstrip('/'))
+    if DATASET_TYPE == 'SWE-rebench-V2':
+        ver = instance.get('version')
+        if (
+            ver is not None
+            and not pd.isna(ver)
+            and str(ver).strip()
+            and str(ver).strip().lower() != 'nan'
+        ):
+            return f'{instance.repo}__{ver}'.replace('/', '__')
+        return str(instance['instance_id']).replace('/', '__')
     return f'{instance.repo}__{instance.version}'.replace('/', '__')
+
+
+def _get_instance_base_commit(instance: pd.Series) -> str:
+    """SWE-bench uses ``base_commit``; some HF rows only have ``parent_commit``."""
+    bc = instance.get('base_commit')
+    if bc is not None and not pd.isna(bc) and str(bc).strip():
+        return str(bc).strip()
+    pc = instance.get('parent_commit')
+    if pc is not None and not pd.isna(pc) and str(pc).strip():
+        return str(pc).strip()
+    raise KeyError(
+        'instance has neither base_commit nor parent_commit (need one for git diff)'
+    )
+
+
+def _instance_for_prompt(instance: pd.Series) -> pd.Series:
+    """Ensure ``base_commit`` is set when the dataset only provides ``parent_commit``."""
+    out = instance.copy()
+    if (
+        pd.isna(out.get('base_commit'))
+        or not str(out.get('base_commit') or '').strip()
+    ) and (
+        out.get('parent_commit') is not None
+        and not pd.isna(out.get('parent_commit'))
+        and str(out.get('parent_commit')).strip()
+    ):
+        out['base_commit'] = str(out['parent_commit']).strip()
+    return out
 
 
 def get_instruction(instance: pd.Series, metadata: EvalMetadata):
     workspace_dir_name = _get_swebench_workspace_dir_name(instance)
+    base_commit = _get_instance_base_commit(instance)
     # Prepare instruction
 
     # Instruction based on Anthropic's official trajectory
@@ -89,7 +150,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -114,7 +175,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script or class and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce class or script, and run them to make sure your fix handles these cases as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions or classes you changed\n'
@@ -139,7 +200,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -164,7 +225,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -189,7 +250,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -214,7 +275,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -239,7 +300,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -264,7 +325,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -292,7 +353,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -317,7 +378,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
             '3. Edit the sourcecode of the repo to resolve the issue.\n'
             '4. Rerun your reproduce script and confirm that the error is fixed!\n'
             '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+            f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
             '   - The issue you are fixing\n'
             '   - The files you modified\n'
             '   - The functions you changed\n'
@@ -345,7 +406,7 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         '3. Edit the sourcecode of the repo to resolve the issue.\n'
         '4. Rerun your reproduce script and confirm that the error is fixed!\n'
         '5. Think about edgecases, add comprehensive tests for them in your reproduce script, and run them to make sure your fix handles them as well.\n'
-        f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {instance["base_commit"]}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
+        f'6. Once you are done with the initial implementation, please carefully re-read the problem description and check the difference between the current code and the base commit {base_commit}. Do you think that the issue has been completely and comprehensively solved? Write tests to check the correctness of the solution, specifically focusing on tests that may point out any remaining problems that are not yet solved. Run all of the tests in the repo and check if any of them fail, and if they do fix the code. Repeat this process of carefully reading the problem description and current implementation, testing, and fixing any problems until you are confident that the current implementation is correct. Find and run any tests in the repo that are related to:\n'
         '   - The issue you are fixing\n'
         '   - The files you modified\n'
         '   - The functions you changed\n'
@@ -373,6 +434,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
 #     else:
 #         return image_name.lower() ##加载本地的
 def get_instance_docker_image(instance: pd.Series):
+    # Official SWE-rebench / V2 Hub images (same layout as OpenHands ``swe_bench/run_infer.py``).
+    if USE_INSTANCE_IMAGE and LANGUAGE == 'python' and DATASET_TYPE == 'SWE-rebench-V2':
+        instance_id = instance['instance_id']
+        repo, name = instance_id.split('__', 1)
+        prefix = 'docker.io/swerebenchv2/'
+        image_name = (
+            f'{prefix.rstrip("/")}/sweb.eval.x86_64.{repo}_1776_{name}:latest'
+        ).lower()
+        logger.debug(f'Using official SWE-rebench-V2 image: {image_name}')
+        return image_name
     if LANGUAGE == 'python':
         image_name = 'sweb.eval.x86_64.' + instance['instance_id']
         image_name = image_name.replace(
@@ -512,9 +583,12 @@ def initialize_runtime(
             # Copy the file to the desired location
             runtime.copy_to(temp_file_path, '/swe_util/eval_data/instances/')
 
-        # inject the instance swe entry
+        if DATASET_TYPE == 'SWE-rebench-V2':
+            entry_script_path = 'instance_swe_entry_rebenchv2.sh'
+        else:
+            entry_script_path = 'instance_swe_entry.sh'
         runtime.copy_to(
-            str(os.path.join(script_dir, 'scripts/setup/instance_swe_entry.sh')),
+            str(os.path.join(script_dir, f'scripts/setup/{entry_script_path}')),
             '/swe_util/',
         )
         action = CmdRunAction(command='cat ~/.bashrc')
@@ -533,14 +607,14 @@ def initialize_runtime(
             logger.error(f'Failed to source ~/.bashrc: {str(obs)}')
         assert_and_raise(obs.exit_code == 0, f'Failed to source ~/.bashrc: {str(obs)}')
 
-        action = CmdRunAction(command='source /swe_util/instance_swe_entry.sh')
+        action = CmdRunAction(command=f'source /swe_util/{entry_script_path}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
         obs = runtime.run_action(action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(
             obs.exit_code == 0,
-            f'Failed to source /swe_util/instance_swe_entry.sh: {str(obs)}',
+            f'Failed to source /swe_util/{entry_script_path}: {str(obs)}',
         )
     else:
         action = CmdRunAction(command='source /swe_util/swe_entry.sh')
@@ -609,6 +683,7 @@ def complete_runtime(
     logger.info('-' * 30)
     obs: CmdOutputObservation
     workspace_dir_name = _get_swebench_workspace_dir_name(instance)
+    base_commit = _get_instance_base_commit(instance)
 
     action = CmdRunAction(command=f'cd /workspace/{workspace_dir_name}')
     action.set_hard_timeout(600)
@@ -698,7 +773,7 @@ def complete_runtime(
     while n_retries < 5:
         # Generate patch, ignoring changes to .gitignore
         action = CmdRunAction(
-            command=f'git diff --no-color --cached {instance["base_commit"]} \':!.gitignore\' > patch.diff'
+            command=f'git diff --no-color --cached {base_commit} \':!.gitignore\' > patch.diff'
         )
         action.set_hard_timeout(max(300 + 100 * n_retries, 600))
         logger.info(action, extra={'msg_type': 'ACTION'})
@@ -739,6 +814,7 @@ def process_instance(
     reset_logger: bool = True,
     runtime_failure_count: int = 0,
 ) -> EvalOutput:
+    instance = _instance_for_prompt(instance)
     config = get_config(instance, metadata)
 
     # Setup the logger properly, so you can run multi-processing to parallelize the evaluation
@@ -882,7 +958,23 @@ if __name__ == '__main__':
         default='test',
         help='split to evaluate on',
     )
+    parser.add_argument(
+        '--dataset-type',
+        type=str,
+        default='',
+        help=(
+            'Override dataset kind (e.g. SWE-rebench-V2) when --dataset is a JSON path '
+            'without "swe-rebench" in the filename. Otherwise inferred from the path / '
+            'SWE_BENCH_DATASET_TYPE env.'
+        ),
+    )
     args, _ = parser.parse_known_args()
+
+    if args.dataset_type.strip():
+        DATASET_TYPE = args.dataset_type.strip()
+        logger.info(f'Dataset type from --dataset-type: {DATASET_TYPE}')
+    else:
+        set_dataset_type(args.dataset)
 
     # NOTE: It is preferable to load datasets from huggingface datasets and perform post-processing
     # so we don't need to manage file uploading to OpenHands's repo
