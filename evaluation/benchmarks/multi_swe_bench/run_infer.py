@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shlex
 import tempfile
 from typing import Any
 
@@ -57,6 +58,29 @@ logger.info(f'Using docker image prefix: {DOCKER_IMAGE_PREFIX}')
 # Mirrors OpenHands ``evaluation/benchmarks/swe_bench/run_infer.py`` for SWE-rebench / V2.
 DATASET_TYPE = 'SWE-bench'
 
+# Pre-agent git snapshot + strip future refs (aligned with OpenHands ``swe_bench/run_infer.py`` /
+# AweAgent PreAgentSetup). Snapshot state before the agent runs, then remove other refs/reflog so
+# the agent cannot recover "solution" commits from git history.
+_GIT_COMMIT_PRE_AGENT = (
+    'git config user.email "pre-agent@awe-agent.local" && '
+    'git config user.name "Pre-Agent" && '
+    'git add -A && '
+    'git commit -m "pre-agent commit"'
+)
+_REMOVE_FUTURE_COMMITS = (
+    'current_branch=$(git rev-parse --abbrev-ref HEAD) && '
+    'git for-each-ref --format="%(refname)" | while read ref; do '
+    'if [[ "$ref" == refs/heads/* ]]; then '
+    'branch_name="${ref#refs/heads/}"; '
+    'if [[ "$branch_name" != "$current_branch" ]]; then '
+    'git branch -f "$branch_name" HEAD; '
+    'fi; '
+    'else git update-ref "$ref" HEAD 2>/dev/null || true; fi; done && '
+    'git stash clear 2>/dev/null || true && '
+    'git reflog expire --expire=now --all 2>/dev/null || true && '
+    'git gc --prune=now 2>/dev/null || true'
+)
+
 
 def set_dataset_type(dataset_name: str) -> None:
     """Set global ``DATASET_TYPE`` from HF id, JSON path, or ``SWE_BENCH_DATASET_TYPE``."""
@@ -67,8 +91,17 @@ def set_dataset_type(dataset_name: str) -> None:
         logger.info(f'Dataset type from SWE_BENCH_DATASET_TYPE: {DATASET_TYPE}')
         return
     name_lower = dataset_name.lower()
-    if 'swe-rebench-v2' in name_lower:
+    if (
+        'swe-rebench-v2' in name_lower
+        or 'swe_rebench_v2' in name_lower
+    ):
         DATASET_TYPE = 'SWE-rebench-V2'
+    elif (
+        'ScaleAI/SWE-bench_Pro' in name_lower
+        or 'swe-bench-pro' in name_lower
+        or 'swe-bench_pro' in name_lower
+    ):
+        DATASET_TYPE = 'SWE-bench-Pro'
     else:
         DATASET_TYPE = 'SWE-bench'
     logger.info(f'Dataset type set to: {DATASET_TYPE}')
@@ -80,6 +113,11 @@ AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
 
 
 def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
+    """Directory name under ``/workspace`` where the repo is copied for the agent."""
+    if DATASET_TYPE == 'SWE-bench-Pro':
+        rn = instance.get('repo_name')
+        if isinstance(rn, str) and rn.strip():
+            return rn.split('/')[-1]
     workdir = instance.get('workdir')
     if isinstance(workdir, str) and workdir.strip():
         return os.path.basename(workdir.rstrip('/'))
@@ -107,6 +145,57 @@ def _get_instance_base_commit(instance: pd.Series) -> str:
     raise KeyError(
         'instance has neither base_commit nor parent_commit (need one for git diff)'
     )
+
+
+def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Series) -> str | None:
+    """Shell snippet to align the task repo with the dataset (same as OpenHands swe_bench).
+
+    After the instance entry script copies the repo into ``/workspace/<name>``, the image
+    default ``HEAD`` may still point at a newer commit than the instance's bug snapshot.
+
+    - If the row has non-empty ``pre_commands`` (string, or Beyond-style dict with
+      ``execute_command.commands``), run that under ``cd /workspace/<name> && ...``.
+    - Otherwise run ``git checkout`` to ``base_commit`` / ``parent_commit``.
+
+    Returns ``None`` when no prep command should run (e.g. no base commit in row).
+    """
+    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    pre = instance.get('pre_commands')
+
+    if pre is not None and not pd.isna(pre):
+        if isinstance(pre, dict):
+            exec_cmd = pre.get('execute_command')
+            if isinstance(exec_cmd, dict):
+                raw_cmds = exec_cmd.get('commands', [])
+                cmds = [
+                    str(c).strip()
+                    for c in raw_cmds
+                    if c is not None and not pd.isna(c) and str(c).strip()
+                ]
+                if cmds:
+                    chained = ' && '.join(cmds)
+                    return f'cd {ws} && {chained}'
+        if isinstance(pre, str):
+            s = pre.strip().removesuffix('\\n')
+            if s:
+                return f'cd {ws} && {s}'
+
+    try:
+        base = _get_instance_base_commit(instance)
+    except KeyError:
+        return None
+    if not str(base).strip():
+        return None
+    return f'cd {ws} && git checkout {shlex.quote(str(base).strip())}'
+
+
+def _scale_swe_pre_agent_git_commands(workspace_dir_name: str) -> list[str]:
+    """Commands to run in the task repo after checkout/pre_commands (OpenHands swe_bench parity)."""
+    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    return [
+        f'cd {ws} && ( {_GIT_COMMIT_PRE_AGENT} || true )',
+        f'cd {ws} && {_REMOVE_FUTURE_COMMITS}',
+    ]
 
 
 def _instance_for_prompt(instance: pd.Series) -> pd.Series:
@@ -414,7 +503,21 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         "Your thinking should be thorough and so it's fine if it's very long.\n"
     )
 
-    instruction = instructions.get(LANGUAGE.lower(), default_instruction)
+    lang_key = LANGUAGE.lower()
+    row_lang = instance.get('language')
+    if isinstance(row_lang, str) and row_lang.strip():
+        lang_key = row_lang.strip().lower()
+    # Common dataset aliases → keys in ``instructions``
+    _aliases = {
+        'js': 'javascript',
+        'nodejs': 'javascript',
+        'node': 'javascript',
+        'ts': 'typescript',
+        'tsx': 'typescript',
+    }
+    lang_key = _aliases.get(lang_key, lang_key)
+
+    instruction = instructions.get(lang_key, default_instruction)
 
     if instruction and RUN_WITH_BROWSING:
         instruction += (
@@ -434,6 +537,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
 #     else:
 #         return image_name.lower() ##加载本地的
 def get_instance_docker_image(instance: pd.Series):
+    # SWE-bench-Pro: per-row Docker image (same field as HF / Nemo-Skills eval).
+    if USE_INSTANCE_IMAGE and DATASET_TYPE == 'SWE-bench-Pro':
+        img = instance.get('dockerhub_tag')
+        if isinstance(img, str) and img.strip():
+            image_name = f'docker://jefzda/sweap-images:{img.strip()}'
+            logger.info(f'Using SWE-bench-Pro image_name: {image_name}')
+            return image_name
+        raise ValueError(
+            'SWE-bench-Pro dataset rows must define non-empty image_name when USE_INSTANCE_IMAGE is true.'
+        )
     # Official SWE-rebench / V2 Hub images (same layout as OpenHands ``swe_bench/run_infer.py``).
     if USE_INSTANCE_IMAGE and LANGUAGE == 'python' and DATASET_TYPE == 'SWE-rebench-V2':
         instance_id = instance['instance_id']
@@ -585,6 +698,8 @@ def initialize_runtime(
 
         if DATASET_TYPE == 'SWE-rebench-V2':
             entry_script_path = 'instance_swe_entry_rebenchv2.sh'
+        elif DATASET_TYPE == 'SWE-bench-Pro':
+            entry_script_path = 'instance_swe_entry_swe_bench_pro.sh'
         else:
             entry_script_path = 'instance_swe_entry.sh'
         runtime.copy_to(
@@ -636,6 +751,29 @@ def initialize_runtime(
         obs.exit_code == 0,
         f'Failed to cd to /workspace/{workspace_dir_name}: {str(obs)}',
     )
+
+    scale_swe_prep = _get_scale_swe_repo_prep_command(workspace_dir_name, instance)
+    if scale_swe_prep:
+        action = CmdRunAction(command=scale_swe_prep)
+        action.set_hard_timeout(600)
+        logger.info(action, extra={'msg_type': 'ACTION'})
+        obs = runtime.run_action(action)
+        logger.info(obs, extra={'msg_type': 'OBSERVATION'})
+        assert_and_raise(
+            obs.exit_code == 0,
+            f'Failed Scale-SWE workspace repo prep: {str(obs)}',
+        )
+
+    for pre_agent_cmd in _scale_swe_pre_agent_git_commands(workspace_dir_name):
+        action = CmdRunAction(command=pre_agent_cmd)
+        action.set_hard_timeout(600)
+        logger.info(action, extra={'msg_type': 'ACTION'})
+        obs = runtime.run_action(action)
+        logger.info(obs, extra={'msg_type': 'OBSERVATION'})
+        assert_and_raise(
+            obs.exit_code == 0,
+            f'Failed Scale-SWE pre-agent git step: {str(obs)}',
+        )
 
     action = CmdRunAction(command='git reset --hard')
     action.set_hard_timeout(600)
@@ -963,9 +1101,8 @@ if __name__ == '__main__':
         type=str,
         default='',
         help=(
-            'Override dataset kind (e.g. SWE-rebench-V2) when --dataset is a JSON path '
-            'without "swe-rebench" in the filename. Otherwise inferred from the path / '
-            'SWE_BENCH_DATASET_TYPE env.'
+            'Override dataset kind (e.g. SWE-rebench-V2, SWE-bench-Pro) when --dataset is '
+            'a JSON path without a recognizable name. Otherwise inferred from the path / '
         ),
     )
     args, _ = parser.parse_known_args()
