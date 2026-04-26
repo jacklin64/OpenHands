@@ -194,8 +194,9 @@ class BashSession:
         self.server = libtmux.Server()
         _shell_command = '/bin/bash'
         if self.username in ['root', 'openhands']:
-            # This starts a non-login (new) shell for the given user
-            _shell_command = f'su {self.username} -'
+            # `su <user> -` starts the user's *login* shell, which is often /bin/ash on Alpine/musl
+            # images. OpenHands needs bash (PROMPT_COMMAND + JSON PS1). Force bash explicitly.
+            _shell_command = f'su {self.username} -s /bin/bash'
 
         # FIXME: we will introduce memory limit using sysbox-runc in coming PR
         # # otherwise, we are running as the CURRENT USER (e.g., when running LocalRuntime)
@@ -502,11 +503,14 @@ class BashSession:
         # Check if the command is a single command or multiple commands
         splited_commands = split_bash_commands(command)
         if len(splited_commands) > 1:
+            _provided = '\n'.join(
+                f'({i + 1}) {cmd}' for i, cmd in enumerate(splited_commands)
+            )
             return ErrorObservation(
                 content=(
-                    f'ERROR: Cannot execute multiple commands at once.\n'
-                    f'Please run each command separately OR chain them into a single command via && or ;\n'
-                    f'Provided commands:\n{"\n".join(f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands))}'
+                    'ERROR: Cannot execute multiple commands at once.\n'
+                    'Please run each command separately OR chain them into a single command via && or ;\n'
+                    f'Provided commands:\n{_provided}'
                 )
             )
 
@@ -594,8 +598,9 @@ class BashSession:
             logger.debug(
                 f'PANE CONTENT GOT after {time.time() - _start_time:.2f} seconds'
             )
-            logger.debug(f'BEGIN OF PANE CONTENT: {cur_pane_output.split("\n")[:10]}')
-            logger.debug(f'END OF PANE CONTENT: {cur_pane_output.split("\n")[-10:]}')
+            _lines = cur_pane_output.splitlines()
+            logger.debug('BEGIN OF PANE CONTENT: %s', _lines[:10])
+            logger.debug('END OF PANE CONTENT: %s', _lines[-10:])
             ps1_matches = CmdOutputMetadata.matches_ps1_metadata(cur_pane_output)
             current_ps1_count = len(ps1_matches)
 

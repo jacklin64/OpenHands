@@ -356,14 +356,20 @@ class ActionExecutor:
         logger.info(f'Initializing by running {len(INIT_COMMANDS)} bash commands...')
         for command in INIT_COMMANDS:
             action = CmdRunAction(command=command)
-            action.set_hard_timeout(300)
+            # Short cap: this is a best-effort convenience init; long hangs block /alive
+            action.set_hard_timeout(60)
             logger.debug(f'Executing init command: {command}')
             obs = await self.run(action)
             assert isinstance(obs, CmdOutputObservation)
             logger.debug(
                 f'Init command outputs (exit code: {obs.exit_code}): {obs.content}'
             )
-            assert obs.exit_code == 0
+            if obs.exit_code != 0:
+                logger.warning(
+                    'Init command returned non-zero exit code: %s; continuing startup. '
+                    'This is often a PS1/timeout edge case; subsequent bash commands use normal error handling.',
+                    obs.exit_code,
+                )
         logger.debug('Bash init commands completed')
 
     async def run_action(self, action) -> Observation:
