@@ -8,6 +8,7 @@ from typing import Any
 
 import bashlex
 import libtmux
+from libtmux.exc import TmuxObjectDoesNotExist
 
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action import CmdRunAction
@@ -189,9 +190,10 @@ class BashSession:
         self.username = username
         self._initialized = False
         self.max_memory_mb = max_memory_mb
+        # Set early so __del__/close() never see a missing _closed if initialize() errors mid-way.
+        self._closed: bool = False
 
     def initialize(self) -> None:
-        self.server = libtmux.Server()
         _shell_command = '/bin/bash'
         if self.username in ['root', 'openhands']:
             # `su <user> -` starts the user's *login* shell, which is often /bin/ash on Alpine/musl
@@ -208,14 +210,30 @@ class BashSession:
         window_command = _shell_command
 
         logger.debug(f'Initializing bash session with command: {window_command}')
-        session_name = f'openhands-{self.username}-{uuid.uuid4()}'
-        self.session = self.server.new_session(
-            session_name=session_name,
-            start_directory=self.work_dir,  # This parameter is supported by libtmux
-            kill_session=True,
-            x=1000,
-            y=1000,
-        )
+        last_err: Exception | None = None
+        for attempt in range(5):
+            self.server = libtmux.Server()
+            session_name = f'openhands-{self.username}-{uuid.uuid4()}'
+            try:
+                self.session = self.server.new_session(
+                    session_name=session_name,
+                    start_directory=self.work_dir,  # This parameter is supported by libtmux
+                    kill_session=True,
+                    x=1000,
+                    y=1000,
+                )
+                break
+            except (TmuxObjectDoesNotExist, OSError) as e:
+                last_err = e
+                logger.warning(
+                    'tmux new_session failed (attempt %s/5): %s; retrying...',
+                    attempt + 1,
+                    e,
+                )
+                time.sleep(0.2 * (attempt + 1))
+        else:
+            assert last_err is not None
+            raise last_err
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
@@ -242,7 +260,6 @@ class BashSession:
         # Store the last command for interactive input handling
         self.prev_status: BashCommandStatus | None = None
         self.prev_output: str = ''
-        self._closed: bool = False
         logger.debug(f'Bash session initialized with work dir: {self.work_dir}')
 
         # Maintain the current working directory
@@ -268,8 +285,14 @@ class BashSession:
         """Clean up the session."""
         if self._closed:
             return
-        self.session.kill()
-        self._closed = True
+        try:
+            session = getattr(self, 'session', None)
+            if session is not None:
+                session.kill()
+        except Exception:
+            logger.debug('Error while closing tmux session', exc_info=True)
+        finally:
+            self._closed = True
 
     @property
     def cwd(self) -> str:
