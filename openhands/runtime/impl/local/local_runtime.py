@@ -64,6 +64,20 @@ _RUNNING_SERVERS: dict[str, ActionExecutionServerInfo] = {}
 # Global list to track warm servers waiting for use
 _WARM_SERVERS: list[ActionExecutionServerInfo] = []
 
+# Max wall time for tenacity retries while polling GET /alive on the action_execution_server.
+# SWE-bench musl/Alpine images often need much longer than 120s for tmux + bash session init.
+
+
+def _local_runtime_startup_wait_sec() -> int:
+    raw = os.environ.get('OH_LOCAL_RUNTIME_STARTUP_WAIT_SEC', '120')
+    try:
+        return max(30, int(raw))
+    except ValueError:
+        return 120
+
+
+_LOCAL_RUNTIME_STARTUP_WAIT_SEC = _local_runtime_startup_wait_sec()
+
 
 def get_user_info() -> tuple[int, str | None]:
     """Get user ID and username in a cross-platform way."""
@@ -404,7 +418,8 @@ class LocalRuntime(ActionExecutionClient):
 
     @tenacity.retry(
         wait=tenacity.wait_fixed(2),
-        stop=tenacity.stop_after_delay(120) | stop_if_should_exit(),
+        stop=tenacity.stop_after_delay(_LOCAL_RUNTIME_STARTUP_WAIT_SEC)
+        | stop_if_should_exit(),
         before_sleep=lambda retry_state: logger.debug(
             f'Waiting for server to be ready... (attempt {retry_state.attempt_number})'
         ),
@@ -750,7 +765,8 @@ def _create_warm_server(
         # Use tenacity to retry the connection
         @tenacity.retry(
             wait=tenacity.wait_fixed(2),
-            stop=tenacity.stop_after_delay(120) | stop_if_should_exit(),
+            stop=tenacity.stop_after_delay(_LOCAL_RUNTIME_STARTUP_WAIT_SEC)
+            | stop_if_should_exit(),
             before_sleep=lambda retry_state: logger.debug(
                 f'Waiting for warm server to be ready... (attempt {retry_state.attempt_number})'
             ),
