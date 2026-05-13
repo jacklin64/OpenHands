@@ -243,6 +243,8 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata) -> MessageActio
     # Determine the template file based on mode and LLM
     if mode.startswith('swt'):
         template_name = 'swt.j2'
+    elif mode == 'issue_rewrite':
+        template_name = 'swe_issue_rewrite.j2'
     elif mode == 'swe':
         if 'gpt-4.1' in llm_model:
             template_name = 'swe_gpt4.j2'
@@ -935,8 +937,11 @@ if __name__ == '__main__':
         '--mode',
         type=str,
         default='swe',
-        choices=['swe', 'swt', 'swt-ci'],
-        help="mode to run the evaluation, either 'swe', 'swt', or 'swt-ci'",
+        choices=['swe', 'swt', 'swt-ci', 'issue_rewrite'],
+        help=(
+            "Evaluation mode: 'swe' (default Jinja prompt), 'swt' / 'swt-ci' (SWT bench), "
+            "or 'issue_rewrite' (use prompts/swe_issue_rewrite.j2 for the initial user message)."
+        ),
     )
 
     args, _ = parser.parse_known_args()
