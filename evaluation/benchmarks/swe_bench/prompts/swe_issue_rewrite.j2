@@ -60,7 +60,7 @@ this script, it crashes."
 `...` with your content). Ensure you wrap the final content in `[ISSUE]` tags.
 <!-- end list -->
 ````bash
-cat << 'EOF' > /workspace/issue_rewritting.txt
+cat << 'EOF' > /workspace/{{ workspace_dir_name }}/issue_rewritting.txt
 [ISSUE]
 Rewritten Issue Description
 [/ISSUE]
@@ -70,7 +70,7 @@ EOF
 **PHASE 4: Final Verification & Submission**
 ------------------------------------------------
 **Step 4: Safety Check**
-- **EXECUTE:** `cat /workspace/issue_rewritting.txt`
+- **EXECUTE:** `cat /workspace/{{ workspace_dir_name }}/issue_rewritting.txt`
 - **Verification Questions:**
 1. Did I mention a file name that is NOT in the PR description? -> *If yes, remove
 it.*
