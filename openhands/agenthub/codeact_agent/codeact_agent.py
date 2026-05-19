@@ -291,4 +291,5 @@ class CodeActAgent(Agent):
         return codeact_function_calling.response_to_actions(
             response,
             mcp_tool_names=list(self.mcp_tools.keys()),
+            append_thinking_content=self.config.append_thinking_content,
         )

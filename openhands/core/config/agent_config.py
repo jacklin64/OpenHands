@@ -44,6 +44,8 @@ class AgentConfig(BaseModel):
     """A list of microagents to disable (by name, without .py extension, e.g. ["github", "lint"]). Default is None."""
     enable_history_truncation: bool = Field(default=True)
     """Whether history should be truncated to continue the session when hitting LLM context length limit."""
+    append_thinking_content: bool = Field(default=False)
+    """When True, include API reasoning fields (e.g. ``thinking_content``) in assistant messages sent back to the LLM on later turns."""
     enable_som_visual_browsing: bool = Field(default=True)
     """Whether to enable SoM (Set of Marks) visual browsing."""
     condenser: CondenserConfig = Field(

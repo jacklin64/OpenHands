@@ -42,6 +42,7 @@ from openhands.events.observation.error import ErrorObservation
 from openhands.events.observation.mcp import MCPObservation
 from openhands.events.observation.observation import Observation
 from openhands.events.serialization.event import truncate_content
+from openhands.llm.llm_utils import get_assistant_message_text
 from openhands.utils.prompt import (
     ConversationInstructions,
     PromptManager,
@@ -238,14 +239,18 @@ class ConversationMemory:
 
             llm_response: ModelResponse = tool_metadata.model_response
             assistant_msg = getattr(llm_response.choices[0], 'message')
+            assistant_text = get_assistant_message_text(
+                assistant_msg,
+                append_thinking_content=self.agent_config.append_thinking_content,
+            )
 
             # Add the LLM message (assistant) that initiated the tool calls
             # (overwrites any previous message with the same response_id)
             pending_tool_call_action_messages[llm_response.id] = Message(
                 role=getattr(assistant_msg, 'role', 'assistant'),
                 # tool call content SHOULD BE a string
-                content=[TextContent(text=assistant_msg.content)]
-                if assistant_msg.content and assistant_msg.content.strip()
+                content=[TextContent(text=assistant_text)]
+                if assistant_text.strip()
                 else [],
                 tool_calls=assistant_msg.tool_calls,
             )
@@ -262,7 +267,10 @@ class ConversationMemory:
                 assistant_msg = getattr(
                     tool_metadata.model_response.choices[0], 'message'
                 )
-                content = assistant_msg.content or ''
+                content = get_assistant_message_text(
+                    assistant_msg,
+                    append_thinking_content=self.agent_config.append_thinking_content,
+                )
 
                 # save content if any, to thought
                 if action.thought:

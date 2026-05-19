@@ -387,6 +387,18 @@ def get_config(
     # get 'draft_editor' config if exists
     config.set_llm_config(get_llm_config_arg('draft_editor'), 'draft_editor')
 
+    append_thinking_content = os.environ.get(
+        'OPENHANDS_APPEND_THINKING_CONTENT', ''
+    ).lower() in ('1', 'true', 'yes', 'on')
+    try:
+        from openhands.core.config.utils import get_agent_config_arg
+
+        toml_agent = get_agent_config_arg('agent')
+        if toml_agent is not None and toml_agent.append_thinking_content:
+            append_thinking_content = True
+    except Exception:
+        pass
+
     agent_config = AgentConfig(
         enable_jupyter=False,
         enable_browsing=RUN_WITH_BROWSING,
@@ -394,6 +406,7 @@ def get_config(
         enable_mcp=False,
         condenser=metadata.condenser_config,
         enable_prompt_extensions=False,
+        append_thinking_content=append_thinking_content,
     )
     config.set_agent_config(agent_config)
     return config

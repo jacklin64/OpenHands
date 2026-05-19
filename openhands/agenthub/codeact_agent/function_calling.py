@@ -40,6 +40,7 @@ from openhands.events.action.agent import CondensationRequestAction
 from openhands.events.action.mcp import MCPAction
 from openhands.events.event import FileEditSource, FileReadSource
 from openhands.events.tool import ToolCallMetadata
+from openhands.llm.llm_utils import get_assistant_message_text
 
 
 def combine_thought(action: Action, thought: str) -> Action:
@@ -53,21 +54,21 @@ def combine_thought(action: Action, thought: str) -> Action:
 
 
 def response_to_actions(
-    response: ModelResponse, mcp_tool_names: list[str] | None = None
+    response: ModelResponse,
+    mcp_tool_names: list[str] | None = None,
+    *,
+    append_thinking_content: bool = False,
 ) -> list[Action]:
     actions: list[Action] = []
     assert len(response.choices) == 1, 'Only one choice is supported for now'
     choice = response.choices[0]
     assistant_msg = choice.message
     if hasattr(assistant_msg, 'tool_calls') and assistant_msg.tool_calls:
-        # Check if there's assistant_msg.content. If so, add it to the thought
-        thought = ''
-        if isinstance(assistant_msg.content, str):
-            thought = assistant_msg.content
-        elif isinstance(assistant_msg.content, list):
-            for msg in assistant_msg.content:
-                if msg['type'] == 'text':
-                    thought += msg['text']
+        # Check if there's assistant text (optionally includes thinking_content).
+        thought = get_assistant_message_text(
+            assistant_msg,
+            append_thinking_content=append_thinking_content,
+        )
 
         # Process each tool call to OpenHands action
         for i, tool_call in enumerate(assistant_msg.tool_calls):
@@ -247,7 +248,10 @@ def response_to_actions(
     else:
         actions.append(
             MessageAction(
-                content=str(assistant_msg.content) if assistant_msg.content else '',
+                content=get_assistant_message_text(
+                    assistant_msg,
+                    append_thinking_content=append_thinking_content,
+                ),
                 wait_for_response=True,
             )
         )

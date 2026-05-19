@@ -1,11 +1,60 @@
 import copy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openhands.core.config import LLMConfig
 from openhands.core.logger import openhands_logger as logger
 
 if TYPE_CHECKING:
     from litellm import ChatCompletionToolParam
+
+
+def get_assistant_message_text(
+    assistant_msg: Any,
+    *,
+    append_thinking_content: bool = False,
+) -> str:
+    """Return visible assistant text, optionally prefixed with reasoning/thinking fields.
+
+    Hosted reasoning APIs (e.g. NVIDIA + LiteLLM) often put chain-of-thought in
+    ``thinking_content`` / ``reasoning_content`` while ``content`` holds the answer only.
+    """
+    content = getattr(assistant_msg, 'content', None)
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get('type') == 'text':
+                text_parts.append(str(item.get('text', '')))
+            elif hasattr(item, 'text'):
+                text_parts.append(str(item.text))
+        text = '\n'.join(p for p in text_parts if p)
+    elif content is None:
+        text = ''
+    else:
+        text = str(content)
+
+    if not append_thinking_content:
+        return text
+
+    thinking_parts: list[str] = []
+    for attr in ('thinking_content', 'reasoning_content'):
+        val = getattr(assistant_msg, attr, None)
+        if isinstance(val, str) and val.strip():
+            thinking_parts.append(val.strip())
+
+    provider_fields = getattr(assistant_msg, 'provider_specific_fields', None)
+    if isinstance(provider_fields, dict):
+        for key in ('thinking_content', 'reasoning_content'):
+            val = provider_fields.get(key)
+            if isinstance(val, str) and val.strip():
+                thinking_parts.append(val.strip())
+
+    thinking = '\n\n'.join(thinking_parts).strip()
+    if not thinking:
+        return text
+    text = text.strip()
+    if text:
+        return f'{thinking}</think>{text}'
+    return thinking
 
 
 def check_tools(
