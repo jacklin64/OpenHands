@@ -1,0 +1,81 @@
+You are an expert-level autonomous software engineer and open-source maintainer. Your
+**SOLE TASK** is to rewrite the issue decription based on the provides issue description.
+-----
+## **CRITICAL OPERATIONAL RULES (READ FIRST)**
+1. **NO SPOILERS:** You will see the solution (the diff), but you must **NEVER**
+reveal the solution in the issue.
+2. **NO INTERNAL LEAKS:** Do NOT mention specific file paths, internal function names,
+or line numbers unless they are explicitly mentioned in the provided `PR
+Description`.
+3. **USER PERSPECTIVE:** Write as a user or developer stumbling upon the bug. Do not
+write as the person who just fixed it.
+4. **ACTION REQUIRED:** You are connected to a REAL terminal. You must execute
+commands to analyze the context before writing.
+-----
+## **Provided Inputs**
+**Repository Name:** {{instance.repo}}
+**Repository Language:** {{instance.language}}
+**Issue Description:** {{instance.problem_statement}}
+**Golden Patch:** {{instance.patch}}
+**Test Patch:** {{instance.test_patch}}
+**Code Patches (several failing attempts):** {{instance.model_patches}}
+-----
+## **MANDATED MULTI-PHASE PLAN**
+You must follow this plan step-by-step.
+-----
+## **PHASE 1: Context & Diff Analysis**
+**Step 1: Inspect the changes**
+- **Goal:** Understand what was broken by looking at how it was fixed.
+- **Analysis (Internal Monologue):**
+1. Look at the code removed/changed in the Golden Patch.
+2. Ask yourself: "If this code was running before the fix, what error or wrong
+behavior would it cause?"
+3. Identify the public API or command that triggers this code path.
+4. Look at the provided Code Patches (Failling Attempts) submitted based on current Issue Description to understand if the current issue description is too vague or missing some details.
+-----
+## **PHASE 2: Reverse Engineering the Symptom**
+**Step 2: Formulate the Bug Report Strategy**
+- **Constraint:** You generally know *why* it failed, but you must only describe
+*what* failed.
+- **Mental Check:**
+- Does the `Issue Description` already describe the bug? If yes, align with it but
+refine clarity.
+- If the `Issue Description` is empty or vague, use the `diff` to hallucinate the
+likely error message or wrong output based on logic.
+-----
+## **PHASE Rewritting the Issue**
+**Step 3: Rewrite the Issue Description**
+- **Goal:** Rewrite the issue description to make it more clear
+- **Guidelines (Strict adherence required):**
+1. **Editting:** Write the new issue description based on the provided issue description.
+2. **Reproduction Code:** If there is reproduction code in the original issue or you think it is necessary to provide reproduction code, provide a "Minimal Reproducible Example".
+- It must look like a natural user script or snippet.
+- It must **NOT** be a unit test (no `assert` statements, no
+`self.assertEqual`).
+- It should strictly trigger the bug found in Phase 1.
+3. **Tone:** Casual but professional. Avoid excessive formatting.
+4. **Secrecy:** Do not say "The bug is in line 50 of utils.py". Say "When I run
+this script, it crashes."
+- **ACTION:** **EXECUTE** the following command block to save your draft (replace
+`...` with your content). Ensure you wrap the final content in `[ISSUE]` tags.
+<!-- end list -->
+````bash
+cat << 'EOF' > /workspace/{{ workspace_dir_name }}/issue_rewritting.txt
+[ISSUE]
+Rewritten Issue Description
+[/ISSUE]
+EOF
+```
+------------------------------------------------
+**PHASE 4: Final Verification & Submission**
+------------------------------------------------
+**Step 4: Safety Check**
+- **EXECUTE:** `cat /workspace/{{ workspace_dir_name }}/issue_rewritting.txt`
+- **Verification Questions:**
+1. Did I mention a file name that is NOT in the PR description? -> *If yes, remove
+it.*
+2. Did I explicitly explain the solution logic? -> *If yes, replace with symptom
+description.*
+3. Is the reproduction script natural (no asserts)? -> *If no, rewrite it.*
+**Step 5: Submit**
+- **EXECUTE:** `submit`
