@@ -82,6 +82,12 @@ _REMOVE_FUTURE_COMMITS = (
 )
 
 
+def _is_swe_universe_dataset_name(name: str) -> bool:
+    """True for SWE-Universe exports (``swe-universe*``, ``swe_universe*``)."""
+    name_lower = name.lower()
+    return 'swe-universe' in name_lower or 'swe_universe' in name_lower
+
+
 def set_dataset_type(dataset_name: str) -> None:
     """Set global ``DATASET_TYPE`` from HF id, JSON path, or ``SWE_BENCH_DATASET_TYPE``."""
     global DATASET_TYPE
@@ -102,6 +108,9 @@ def set_dataset_type(dataset_name: str) -> None:
         or 'swe-bench_pro' in name_lower
     ):
         DATASET_TYPE = 'SWE-bench-Pro'
+    elif _is_swe_universe_dataset_name(name_lower) or 'scale-swe' in name_lower:
+        # Scale-SWE / SWE-Universe JSONL: ``workdir`` under /workspace, Apptainer .sif per instance.
+        DATASET_TYPE = 'SWE-universe'
     else:
         DATASET_TYPE = 'SWE-bench'
     logger.info(f'Dataset type set to: {DATASET_TYPE}')
@@ -557,6 +566,13 @@ def get_instance_docker_image(instance: pd.Series):
         ).lower()
         logger.debug(f'Using official SWE-rebench-V2 image: {image_name}')
         return image_name
+    if USE_INSTANCE_IMAGE and DATASET_TYPE == 'SWE-universe':
+        image_url = instance.get('image_url')
+        if isinstance(image_url, str) and image_url.strip():
+            return image_url.strip().lower()
+        image_name = 'sweb.eval.x86_64.' + instance['instance_id']
+        image_name = image_name.replace('__', '_s_')
+        return (DOCKER_IMAGE_PREFIX.rstrip('/') + '/' + image_name).lower()
     if LANGUAGE == 'python':
         image_name = 'sweb.eval.x86_64.' + instance['instance_id']
         image_name = image_name.replace(
@@ -700,6 +716,8 @@ def initialize_runtime(
             entry_script_path = 'instance_swe_entry_rebenchv2.sh'
         elif DATASET_TYPE == 'SWE-bench-Pro':
             entry_script_path = 'instance_swe_entry_swe_bench_pro.sh'
+        elif DATASET_TYPE == 'SWE-universe':
+            entry_script_path = 'instance_swe_entry_swe_universe.sh'
         else:
             entry_script_path = 'instance_swe_entry.sh'
         runtime.copy_to(
@@ -1101,8 +1119,9 @@ if __name__ == '__main__':
         type=str,
         default='',
         help=(
-            'Override dataset kind (e.g. SWE-rebench-V2, SWE-bench-Pro) when --dataset is '
-            'a JSON path without a recognizable name. Otherwise inferred from the path / '
+            'Override dataset kind (e.g. SWE-rebench-V2, SWE-bench-Pro, SWE-universe) when '
+            '--dataset is a JSON path without a recognizable name. Otherwise inferred from '
+            'the path / first row ``source``.'
         ),
     )
     args, _ = parser.parse_known_args()
@@ -1120,6 +1139,11 @@ if __name__ == '__main__':
     dataset = load_dataset('json', data_files=args.dataset)
     dataset = dataset[args.split]
     swe_bench_tests = filter_dataset(dataset.to_pandas(), 'instance_id')
+
+    if not args.dataset_type.strip() and DATASET_TYPE == 'SWE-bench' and len(swe_bench_tests) > 0:
+        src = swe_bench_tests.iloc[0].get('source')
+        if isinstance(src, str) and src.strip():
+            set_dataset_type(src)
     logger.info(
         f'Loaded dataset {args.dataset} with split {args.split}: {len(swe_bench_tests)} tasks'
     )
