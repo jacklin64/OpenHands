@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shlex
 import tempfile
 from typing import Any
@@ -156,6 +157,22 @@ def _get_instance_base_commit(instance: pd.Series) -> str:
     )
 
 
+def _normalize_scale_swe_pre_commands(cmd: str) -> str:
+    """Make Scale-SWE ``pre_commands`` idempotent after the instance entry script.
+
+    ``git checkout <rev> -f`` returns exit 1 with "unable to create file …: File exists"
+    when the working tree already matches ``rev`` (common when workdir is /workspace/repo).
+    ``git reset --hard`` avoids that. Use ``checkout -B`` so retries do not fail on
+    "branch scaleswe already exists".
+    """
+    cmd = re.sub(
+        r'\bgit checkout (\S+) -f\b',
+        r'git reset --hard \1',
+        cmd,
+    )
+    return cmd.replace('git checkout -b scaleswe', 'git checkout -B scaleswe')
+
+
 def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Series) -> str | None:
     """Shell snippet to align the task repo with the dataset (same as OpenHands swe_bench).
 
@@ -182,12 +199,12 @@ def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Serie
                     if c is not None and not pd.isna(c) and str(c).strip()
                 ]
                 if cmds:
-                    chained = ' && '.join(cmds)
+                    chained = _normalize_scale_swe_pre_commands(' && '.join(cmds))
                     return f'cd {ws} && {chained}'
         if isinstance(pre, str):
             s = pre.strip().removesuffix('\\n')
             if s:
-                return f'cd {ws} && {s}'
+                return f'cd {ws} && {_normalize_scale_swe_pre_commands(s)}'
 
     try:
         base = _get_instance_base_commit(instance)
@@ -195,7 +212,8 @@ def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Serie
         return None
     if not str(base).strip():
         return None
-    return f'cd {ws} && git checkout {shlex.quote(str(base).strip())}'
+    base_q = shlex.quote(str(base).strip())
+    return f'cd {ws} && git reset --hard {base_q}'
 
 
 def _scale_swe_pre_agent_git_commands(workspace_dir_name: str) -> list[str]:

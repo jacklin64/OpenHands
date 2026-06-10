@@ -39,19 +39,24 @@ else
 fi
 
 mkdir -p /workspace
+DEST="/workspace/$WORKSPACE_NAME"
 
-# If the repo lives under /workspace, rm -rf /workspace/* would delete the source — stage first.
-if [[ "$SRC" == /workspace/* ]]; then
+# SWE-universe images often ship the repo already at workdir (/workspace/repo). Skip a
+# redundant copy — it triggers ``git checkout -f`` "File exists" errors in Scale-SWE prep.
+if [[ "$SRC" == "$DEST" || "$SRC" == "${DEST}/" ]]; then
+    echo "Repo already at ${DEST}; skipping copy"
+elif [[ "$SRC" == /workspace/* ]]; then
+    # If the repo lives under /workspace, rm -rf /workspace/* would delete the source — stage first.
     STAGING=$(mktemp -d)
     cp -a "$SRC"/. "$STAGING/"
     rm -rf /workspace/*
-    mkdir -p "/workspace/$WORKSPACE_NAME"
-    cp -a "$STAGING"/. "/workspace/$WORKSPACE_NAME/"
+    mkdir -p "$DEST"
+    cp -a "$STAGING"/. "$DEST/"
     rm -rf "$STAGING"
 else
     rm -rf /workspace/*
     mkdir -p /workspace
-    cp -a "$SRC" "/workspace/$WORKSPACE_NAME"
+    cp -a "$SRC" "$DEST"
 fi
 
 if [ -d /opt/miniconda3 ]; then
