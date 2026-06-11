@@ -81,6 +81,20 @@ _REMOVE_FUTURE_COMMITS = (
     'git reflog expire --expire=now --all 2>/dev/null || true && '
     'git gc --prune=now 2>/dev/null || true'
 )
+# SWE-universe: same ref/reflog stripping without ``git gc`` (large monorepos can spend
+# minutes in gc during OpenHands init; reflog/branch cleanup is enough to hide post-base history).
+_REMOVE_FUTURE_COMMITS_LIGHT = (
+    'current_branch=$(git rev-parse --abbrev-ref HEAD) && '
+    'git for-each-ref --format="%(refname)" | while read ref; do '
+    'if [[ "$ref" == refs/heads/* ]]; then '
+    'branch_name="${ref#refs/heads/}"; '
+    'if [[ "$branch_name" != "$current_branch" ]]; then '
+    'git branch -f "$branch_name" HEAD; '
+    'fi; '
+    'else git update-ref "$ref" HEAD 2>/dev/null || true; fi; done && '
+    'git stash clear 2>/dev/null || true && '
+    'git reflog expire --expire=now --all 2>/dev/null || true'
+)
 
 
 def _is_swe_universe_dataset_name(name: str) -> bool:
@@ -157,6 +171,17 @@ def _get_instance_base_commit(instance: pd.Series) -> str:
     )
 
 
+def _is_swe_universe_instance(instance: pd.Series) -> bool:
+    """True for swe-universe JSONL rows (not Scale-SWE HF ``AweAI-Team/Scale-SWE``)."""
+    for key in ('source', 'dataset_name'):
+        val = instance.get(key)
+        if isinstance(val, str) and (
+            'swe-universe' in val.lower() or 'swe_universe' in val.lower()
+        ):
+            return True
+    return False
+
+
 def _normalize_scale_swe_pre_commands(cmd: str) -> str:
     """Make Scale-SWE ``pre_commands`` idempotent after the instance entry script.
 
@@ -171,6 +196,80 @@ def _normalize_scale_swe_pre_commands(cmd: str) -> str:
         cmd,
     )
     return cmd.replace('git checkout -b scaleswe', 'git checkout -B scaleswe')
+
+
+def _swe_universe_conditional_reset_shell(ws: str, base_q: str) -> str:
+    """Bash: align the tree with ``base_q`` only when HEAD or the working tree differs.
+
+    SWE-universe images often ship with the repo already at the bug snapshot. Skipping
+    ``git reset --hard`` in that case avoids redundant work on large trees; ref/reflog
+    stripping in later steps still hides post-base commits.
+    """
+    clean_excludes = "-e '*.egg-info' -e '.tox' -e '.venv'"
+    return (
+        f'cd {ws} && '
+        f'BASE=$(git rev-parse --verify {base_q}^{{commit}}) && '
+        f'HEAD=$(git rev-parse HEAD) && '
+        'if [ "$HEAD" = "$BASE" ] && git diff --quiet HEAD && git diff --cached --quiet HEAD; then '
+        "echo 'swe-universe prep: already at base commit with clean tree; skipping reset' && "
+        f"git clean -fd {clean_excludes} 2>/dev/null || true; "
+        'elif [ "$HEAD" = "$BASE" ]; then '
+        "echo 'swe-universe prep: at base commit but dirty tree; cleaning without reset' && "
+        f"git clean -fd {clean_excludes} && git checkout -- .; "
+        'else '
+        "echo 'swe-universe prep: HEAD differs from base; running git reset --hard' && "
+        f"git clean -fd {clean_excludes} && git reset --hard {base_q}; "
+        'fi'
+    )
+
+
+def _swe_universe_light_repo_prep_steps(
+    workspace_dir_name: str, instance: pd.Series
+) -> list[tuple[str, int]]:
+    """Fast swe-universe repo prep: conditional reset, one branch, strip future refs.
+
+    Replaces JSONL ``pre_commands`` (which run ``git gc --prune=now --aggressive`` and
+    can exceed OpenHands' 600s init timeout on large repos). Post-base history is still
+    removed via packed-refs / branch / tag / remote cleanup here and
+    :func:`_scale_swe_pre_agent_git_commands` afterward.
+    """
+    base = _get_instance_base_commit(instance)
+    base_q = shlex.quote(str(base).strip())
+    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    return [
+        (
+            _swe_universe_conditional_reset_shell(ws, base_q),
+            300,
+        ),
+        (
+            f'cd {ws} && git checkout -B scaleswe && '
+            "git config user.email 'scaleswe@example.com' && "
+            "git config user.name 'scaleswe-engine'",
+            120,
+        ),
+        (
+            f'cd {ws} && rm -f .git/packed-refs && '
+            "find .git/refs/heads -type f ! -name 'scaleswe' -delete && "
+            'rm -rf .git/refs/tags .git/refs/remotes && '
+            'git reflog expire --expire=now --all 2>/dev/null || true',
+            180,
+        ),
+    ]
+
+
+def _get_repo_prep_steps(
+    workspace_dir_name: str, instance: pd.Series
+) -> list[tuple[str, int]]:
+    """Return ``(shell_command, hard_timeout_seconds)`` for workspace repo prep."""
+    if _is_swe_universe_instance(instance):
+        try:
+            return _swe_universe_light_repo_prep_steps(workspace_dir_name, instance)
+        except KeyError:
+            return []
+    cmd = _get_scale_swe_repo_prep_command(workspace_dir_name, instance)
+    if cmd:
+        return [(cmd, 600)]
+    return []
 
 
 def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Series) -> str | None:
@@ -216,12 +315,19 @@ def _get_scale_swe_repo_prep_command(workspace_dir_name: str, instance: pd.Serie
     return f'cd {ws} && git reset --hard {base_q}'
 
 
-def _scale_swe_pre_agent_git_commands(workspace_dir_name: str) -> list[str]:
+def _scale_swe_pre_agent_git_commands(
+    workspace_dir_name: str, instance: pd.Series | None = None
+) -> list[str]:
     """Commands to run in the task repo after checkout/pre_commands (OpenHands swe_bench parity)."""
     ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    remove_future = (
+        _REMOVE_FUTURE_COMMITS_LIGHT
+        if instance is not None and _is_swe_universe_instance(instance)
+        else _REMOVE_FUTURE_COMMITS
+    )
     return [
         f'cd {ws} && ( {_GIT_COMMIT_PRE_AGENT} || true )',
-        f'cd {ws} && {_REMOVE_FUTURE_COMMITS}',
+        f'cd {ws} && {remove_future}',
     ]
 
 
@@ -788,19 +894,20 @@ def initialize_runtime(
         f'Failed to cd to /workspace/{workspace_dir_name}: {str(obs)}',
     )
 
-    scale_swe_prep = _get_scale_swe_repo_prep_command(workspace_dir_name, instance)
-    if scale_swe_prep:
-        action = CmdRunAction(command=scale_swe_prep)
-        action.set_hard_timeout(600)
+    for prep_cmd, prep_timeout in _get_repo_prep_steps(workspace_dir_name, instance):
+        action = CmdRunAction(command=prep_cmd)
+        action.set_hard_timeout(prep_timeout)
         logger.info(action, extra={'msg_type': 'ACTION'})
         obs = runtime.run_action(action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(
             obs.exit_code == 0,
-            f'Failed Scale-SWE workspace repo prep: {str(obs)}',
+            f'Failed workspace repo prep: {str(obs)}',
         )
 
-    for pre_agent_cmd in _scale_swe_pre_agent_git_commands(workspace_dir_name):
+    for pre_agent_cmd in _scale_swe_pre_agent_git_commands(
+        workspace_dir_name, instance
+    ):
         action = CmdRunAction(command=pre_agent_cmd)
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
