@@ -34,14 +34,6 @@ WORKSPACE_NAME=$(echo "$item" | jq -r '
 
 echo "WORKSPACE_NAME: $WORKSPACE_NAME"
 
-if [ -d /workspace ]; then
-    rm -rf /workspace/*
-else
-    mkdir /workspace
-fi
-if [ -d "/workspace/$WORKSPACE_NAME" ]; then
-    rm -rf "/workspace/$WORKSPACE_NAME"
-fi
 mkdir -p /workspace
 
 SOURCE="/app"
@@ -53,7 +45,20 @@ if [ ! -d "$SOURCE" ]; then
   exit 1
 fi
 
-cp -r "$SOURCE" "/workspace/$WORKSPACE_NAME"
+DEST="/workspace/$WORKSPACE_NAME"
+# SWE-bench-Pro images bake the repo at /app. Symlink into /workspace instead of copying.
+if [ "$SOURCE" = "/app" ]; then
+    rm -rf "$DEST"
+    ln -sfn "$SOURCE" "$DEST"
+else
+    if [ -d /workspace ]; then
+        rm -rf /workspace/*
+    fi
+    if [ -d "$DEST" ]; then
+        rm -rf "$DEST"
+    fi
+    cp -r "$SOURCE" "$DEST"
+fi
 
 if [ -d /opt/miniconda3 ]; then
     . /opt/miniconda3/etc/profile.d/conda.sh

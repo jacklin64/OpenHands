@@ -142,6 +142,12 @@ def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
         rn = instance.get('repo_name')
         if isinstance(rn, str) and rn.strip():
             return rn.split('/')[-1]
+        workdir = instance.get('workdir')
+        if isinstance(workdir, str) and workdir.strip():
+            return os.path.basename(workdir.rstrip('/'))
+        repo = instance.get('repo')
+        if isinstance(repo, str) and repo.strip():
+            return repo.split('/')[-1]
     workdir = instance.get('workdir')
     if isinstance(workdir, str) and workdir.strip():
         return os.path.basename(workdir.rstrip('/'))
@@ -180,6 +186,48 @@ def _is_swe_universe_instance(instance: pd.Series) -> bool:
         ):
             return True
     return False
+
+
+def _is_swe_bench_pro_instance(instance: pd.Series) -> bool:
+    """True for SWE-bench-Pro JSONL rows (repo baked at ``/app`` in instance SIFs)."""
+    for key in ('source', 'dataset_name'):
+        val = instance.get(key)
+        if isinstance(val, str) and (
+            'swe-bench_pro' in val.lower() or 'swe-bench-pro' in val.lower()
+        ):
+            return True
+    return False
+
+
+def _uses_in_place_task_repo(instance: pd.Series) -> bool:
+    """Use the image-baked repo path instead of copying into ``/workspace``."""
+    if USE_INSTANCE_IMAGE:
+        return False
+    if _is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro':
+        return True
+    if _is_swe_universe_instance(instance):
+        workdir = instance.get('workdir')
+        return isinstance(workdir, str) and bool(workdir.strip())
+    return False
+
+
+def _get_task_repo_path(instance: pd.Series) -> str:
+    """Absolute path to the task repo for git prep and agent ``cd``."""
+    if not _uses_in_place_task_repo(instance):
+        return f'/workspace/{_get_swebench_workspace_dir_name(instance)}'
+    if _is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro':
+        return '/app'
+    workdir = instance.get('workdir')
+    if isinstance(workdir, str) and workdir.strip():
+        return workdir.rstrip('/')
+    return f'/workspace/{_get_swebench_workspace_dir_name(instance)}'
+
+
+def _uses_light_repo_prep(instance: pd.Series) -> bool:
+    return _is_swe_universe_instance(instance) or (
+        _uses_in_place_task_repo(instance)
+        and (_is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro')
+    )
 
 
 def _normalize_scale_swe_pre_commands(cmd: str) -> str:
@@ -226,7 +274,7 @@ def _swe_universe_conditional_reset_shell(ws: str, base_q: str) -> str:
 def _swe_universe_light_repo_prep_steps(
     workspace_dir_name: str, instance: pd.Series
 ) -> list[tuple[str, int]]:
-    """Fast swe-universe repo prep: conditional reset, one branch, strip future refs.
+    """Fast in-place repo prep: conditional reset, one branch, strip future refs.
 
     Replaces JSONL ``pre_commands`` (which run ``git gc --prune=now --aggressive`` and
     can exceed OpenHands' 600s init timeout on large repos). Post-base history is still
@@ -235,7 +283,7 @@ def _swe_universe_light_repo_prep_steps(
     """
     base = _get_instance_base_commit(instance)
     base_q = shlex.quote(str(base).strip())
-    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    ws = shlex.quote(_get_task_repo_path(instance))
     return [
         (
             _swe_universe_conditional_reset_shell(ws, base_q),
@@ -261,7 +309,7 @@ def _get_repo_prep_steps(
     workspace_dir_name: str, instance: pd.Series
 ) -> list[tuple[str, int]]:
     """Return ``(shell_command, hard_timeout_seconds)`` for workspace repo prep."""
-    if _is_swe_universe_instance(instance):
+    if _uses_light_repo_prep(instance):
         try:
             return _swe_universe_light_repo_prep_steps(workspace_dir_name, instance)
         except KeyError:
@@ -319,10 +367,14 @@ def _scale_swe_pre_agent_git_commands(
     workspace_dir_name: str, instance: pd.Series | None = None
 ) -> list[str]:
     """Commands to run in the task repo after checkout/pre_commands (OpenHands swe_bench parity)."""
-    ws = shlex.quote(f'/workspace/{workspace_dir_name}')
+    ws = shlex.quote(
+        _get_task_repo_path(instance)
+        if instance is not None
+        else f'/workspace/{workspace_dir_name}'
+    )
     remove_future = (
         _REMOVE_FUTURE_COMMITS_LIGHT
-        if instance is not None and _is_swe_universe_instance(instance)
+        if instance is not None and _uses_light_repo_prep(instance)
         else _REMOVE_FUTURE_COMMITS
     )
     return [
@@ -346,9 +398,23 @@ def _instance_for_prompt(instance: pd.Series) -> pd.Series:
     return out
 
 
+def _prompt_repo_labels(instance: pd.Series) -> tuple[str, str, str]:
+    """Return ``(upload_path, dir_label, work_parent)`` for agent instructions."""
+    task_repo_path = _get_task_repo_path(instance)
+    if task_repo_path.startswith('/workspace/'):
+        upload_path = task_repo_path
+        work_parent = '/workspace'
+        dir_label = task_repo_path[len('/workspace/') :]
+    else:
+        upload_path = task_repo_path
+        work_parent = task_repo_path
+        dir_label = os.path.basename(task_repo_path) or task_repo_path
+    return upload_path, dir_label, work_parent
+
+
 def get_instruction(instance: pd.Series, metadata: EvalMetadata):
-    workspace_dir_name = _get_swebench_workspace_dir_name(instance)
     base_commit = _get_instance_base_commit(instance)
+    upload_path, dir_label, work_parent = _prompt_repo_labels(instance)
     # Prepare instruction
 
     # Instruction based on Anthropic's official trajectory
@@ -356,16 +422,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
     instructions = {
         'python': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a python code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a python code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Python environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error and execute it with `python <filename.py>` using the BashTool, to confirm the error.\n'
@@ -381,16 +447,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'java': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Java code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Java code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Java environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a Java class to reproduce the error and execute it by first compiling with `javac <classname>.java` and then running with `java <classname>` using the BashTool, to confirm the error\n'
@@ -406,16 +472,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'go': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Go code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Go code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Go environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script or a function to reproduce the error and execute it with `go run <filename.go>` using the BashTool, to confirm the error.\n'
@@ -431,16 +497,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'c': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a C code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a C code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development C environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error by compiling your C code (for example, using `gcc <filename.c> -o <executable>`) and then running the executable using the BashTool, to confirm the error.\n'
@@ -456,16 +522,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'cpp': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a C++ code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a C++ code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development C++ environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create or adapt a small executable (e.g., a main file or a test driver) to reproduce the issue. Build and run it (for example, by using `g++ -o reproduce reproduce.cpp && ./reproduce` via the BashTool) to confirm the error.\n'
@@ -481,16 +547,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'javascript': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Javascript code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Javascript code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Javascript environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error and execute it with `node <filename.js>` using the BashTool, to confirm the error.\n'
@@ -506,16 +572,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'typescript': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Typescript code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Typescript code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Typescript environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error and execute it with `ts-node <filename.ts>` using the BashTool, to confirm the error.\n'
@@ -531,16 +597,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'rust': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Rust code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Rust code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Rust environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a reproduction script (or binary) that triggers the error and execute it with `cargo run --bin <filename>` using the BashTool, to confirm the error.\n'
@@ -559,16 +625,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         # =====
         'ruby': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a Ruby code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a Ruby code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development Ruby environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error and execute it with `ruby <filename.rb>` using the BashTool, to confirm the error.\n'
@@ -584,16 +650,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
         ),
         'php': (
             '<uploaded_files>\n'
-            f'/workspace/{workspace_dir_name}\n'
+            f'{upload_path}\n'
             '</uploaded_files>\n'
-            f"I've uploaded a PHP code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+            f"I've uploaded a PHP code repository in the directory {dir_label}. Consider the following issue description:\n\n"
             f'<issue_description>\n'
             f'{instance.problem_statement}\n'
             '</issue_description>\n\n'
             'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
             "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
             "Also the development PHP environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-            'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+            f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
             'Follow these steps to resolve the issue:\n'
             '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
             '2. Create a script to reproduce the error and execute it with `php <filename.php>` using the BashTool, to confirm the error.\n'
@@ -612,16 +678,16 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
     # Language-agnostic prompt, for languages not covered by the above
     default_instruction = (
         '<uploaded_files>\n'
-        f'/workspace/{workspace_dir_name}\n'
+        f'{upload_path}\n'
         '</uploaded_files>\n'
-        f"I've uploaded a code repository in the directory {workspace_dir_name}. Consider the following issue description:\n\n"
+        f"I've uploaded a code repository in the directory {dir_label}. Consider the following issue description:\n\n"
         f'<issue_description>\n'
         f'{instance.problem_statement}\n'
         '</issue_description>\n\n'
         'Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?\n'
         "I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!\n"
         "Also the development environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.\n"
-        'Your task is to make the minimal changes to non-test files in the /workspace directory to ensure the <issue_description> is satisfied.\n'
+        f'Your task is to make the minimal changes to non-test files in the {work_parent} directory to ensure the <issue_description> is satisfied.\n'
         'Follow these steps to resolve the issue:\n'
         '1. As a first step, it might be a good idea to explore the repo to familiarize yourself with its structure.\n'
         '2. Create a script to reproduce the error and execute it using the BashTool, to confirm the error.\n'
@@ -884,14 +950,15 @@ def initialize_runtime(
             f'Failed to source /swe_util/swe_entry.sh: {str(obs)}',
         )
 
-    action = CmdRunAction(command=f'cd /workspace/{workspace_dir_name}')
+    task_repo_path = _get_task_repo_path(instance)
+    action = CmdRunAction(command=f'cd {shlex.quote(task_repo_path)}')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         obs.exit_code == 0,
-        f'Failed to cd to /workspace/{workspace_dir_name}: {str(obs)}',
+        f'Failed to cd to {task_repo_path}: {str(obs)}',
     )
 
     for prep_cmd, prep_timeout in _get_repo_prep_steps(workspace_dir_name, instance):
@@ -963,10 +1030,10 @@ def complete_runtime(
     logger.info('BEGIN Runtime Completion Fn')
     logger.info('-' * 30)
     obs: CmdOutputObservation
-    workspace_dir_name = _get_swebench_workspace_dir_name(instance)
+    task_repo_path = _get_task_repo_path(instance)
     base_commit = _get_instance_base_commit(instance)
 
-    action = CmdRunAction(command=f'cd /workspace/{workspace_dir_name}')
+    action = CmdRunAction(command=f'cd {shlex.quote(task_repo_path)}')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
@@ -981,7 +1048,7 @@ def complete_runtime(
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
         # Then run the command again
-        action = CmdRunAction(command=f'cd /workspace/{workspace_dir_name}')
+        action = CmdRunAction(command=f'cd {shlex.quote(task_repo_path)}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
         obs = runtime.run_action(action)
@@ -989,7 +1056,7 @@ def complete_runtime(
 
     assert_and_raise(
         isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
-        f'Failed to cd to /workspace/{workspace_dir_name}: {str(obs)}',
+        f'Failed to cd to {task_repo_path}: {str(obs)}',
     )
 
     action = CmdRunAction(command='git config --global core.pager ""')
