@@ -1094,15 +1094,17 @@ def complete_runtime(
         f'Failed to git add -A: {str(obs)}',
     )
 
-    ##删除二进制文件
+    # Exclude Git-marked binary files from the staged diff. Do not use
+    # `file ... | grep executable`: text scripts with shebangs are reported as
+    # executable and must stay in the model patch.
     action = CmdRunAction(
         command="""
-        for file in $(git status --porcelain | grep -E "^(M| M|\\?\\?|A| A)" | cut -c4-); do
-            if [ -f "$file" ] && (file "$file" | grep -q "executable" || git check-attr binary "$file" | grep -q "binary: set"); then
-                git rm -f "$file" 2>/dev/null || rm -f "$file"
-                echo "Removed: $file"
+        while IFS= read -r -d '' file; do
+            if git check-attr binary -- "$file" | grep -q "binary: set"; then
+                git restore --staged -- "$file" 2>/dev/null || git rm --cached -f "$file" 2>/dev/null || true
+                echo "Unstaged binary: $file"
             fi
-        done
+        done < <(git diff --cached --name-only -z)
         """
     )
     action.set_hard_timeout(600)
