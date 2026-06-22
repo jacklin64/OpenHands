@@ -735,6 +735,22 @@ def filter_dataset(dataset: pd.DataFrame, filter_column: str) -> pd.DataFrame:
     return dataset
 
 
+def _maybe_stringify_test_list_columns(instances: pd.DataFrame) -> pd.DataFrame:
+    """Coerce FAIL_TO_PASS / PASS_TO_PASS to str when present (optional columns).
+
+    Agent-side dataset sanitization may strip these fields to avoid leaking test
+    names; skip coercion when a column is absent instead of raising KeyError.
+    """
+    if len(instances) == 0:
+        return instances
+    for col in ('PASS_TO_PASS', 'FAIL_TO_PASS'):
+        if col not in instances.columns:
+            continue
+        if not isinstance(instances[col].iloc[0], str):
+            instances[col] = instances[col].apply(lambda x: str(x))
+    return instances
+
+
 if __name__ == '__main__':
     parser = get_evaluation_parser()
     parser.add_argument(
@@ -844,11 +860,7 @@ if __name__ == '__main__':
     if not ITERATIVE_EVAL_MODE:
         # load the dataset
         instances = prepare_dataset(swe_bench_tests, output_file, args.eval_n_limit)
-        if len(instances) > 0 and not isinstance(
-            instances['PASS_TO_PASS'][instances['PASS_TO_PASS'].index[0]], str
-        ):
-            for col in ['PASS_TO_PASS', 'FAIL_TO_PASS']:
-                instances[col] = instances[col].apply(lambda x: str(x))
+        instances = _maybe_stringify_test_list_columns(instances)
 
         run_evaluation(
             instances,
@@ -889,11 +901,7 @@ if __name__ == '__main__':
             instances = prepare_dataset(
                 swe_bench_tests, cur_output_file, args.eval_n_limit, eval_ids=eval_ids
             )
-            if len(instances) > 0 and not isinstance(
-                instances['PASS_TO_PASS'][instances['PASS_TO_PASS'].index[0]], str
-            ):
-                for col in ['PASS_TO_PASS', 'FAIL_TO_PASS']:
-                    instances[col] = instances[col].apply(lambda x: str(x))
+            instances = _maybe_stringify_test_list_columns(instances)
 
             # Run evaluation - but save them to cur_output_file
             logger.info(
