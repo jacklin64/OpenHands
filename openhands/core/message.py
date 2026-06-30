@@ -1,8 +1,15 @@
+import os
 from enum import Enum
 from typing import Any, Literal
 
 from litellm import ChatCompletionMessageToolCall
 from pydantic import BaseModel, Field, model_serializer
+
+# Key under which a prior assistant turn's reasoning/chain-of-thought is sent
+# back to the model (interleaved reasoning). Matches the field the model's chat
+# template reads for historical reasoning. For DeepSeek served by vLLM this is
+# `reasoning` (the same value used by opencode's `interleaved.field`).
+REASONING_REPLAY_FIELD = os.environ.get('OPENHANDS_REASONING_REPLAY_FIELD', 'reasoning')
 
 
 class ContentType(Enum):
@@ -64,6 +71,9 @@ class Message(BaseModel):
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
+    # - reasoning/chain-of-thought captured from the LLM response for this
+    #   assistant turn, re-sent on later requests for interleaved reasoning
+    reasoning_content: str | None = None
     # force string serializer
     force_string_serializer: bool = False
 
@@ -154,5 +164,11 @@ class Message(BaseModel):
             )
             message_dict['tool_call_id'] = self.tool_call_id
             message_dict['name'] = self.name
+
+        # re-send this assistant turn's reasoning so the model can see its own
+        # prior chain-of-thought (interleaved reasoning). Mirrors opencode's
+        # `interleaved.field` round-trip.
+        if self.reasoning_content:
+            message_dict[REASONING_REPLAY_FIELD] = self.reasoning_content
 
         return message_dict
