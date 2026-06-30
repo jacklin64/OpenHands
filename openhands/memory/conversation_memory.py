@@ -1,3 +1,4 @@
+import os
 from typing import Generator
 
 from litellm import ModelResponse
@@ -48,6 +49,36 @@ from openhands.utils.prompt import (
     RepositoryInfo,
     RuntimeInfo,
 )
+
+
+# When enabled, each historical assistant turn's reasoning/chain-of-thought is
+# captured from the LLM response and re-sent on subsequent requests, so a
+# reasoning model (e.g. DeepSeek via vLLM) can see its own prior thinking across
+# tool calls (interleaved reasoning). On by default; disable with
+# OPENHANDS_INTERLEAVED_REASONING=0. No-op for servers without a reasoning parser
+# (reasoning_content stays empty). NOTE: if running a provider that returns
+# reasoning_content but expects a different replay format (e.g. Anthropic
+# thinking_blocks), disable this to avoid injecting a stray `reasoning` key.
+INTERLEAVED_REASONING = os.environ.get(
+    'OPENHANDS_INTERLEAVED_REASONING', '1'
+).lower() in ('1', 'true', 'yes')
+
+
+def _extract_reasoning_content(assistant_msg: object) -> str | None:
+    """Pull the reasoning/CoT text from a litellm response message.
+
+    litellm normalizes a vLLM `reasoning` (or `reasoning_content`) response field
+    onto `message.reasoning_content`; some versions also keep the raw value in
+    `provider_specific_fields`. Check all of these.
+    """
+    reasoning = getattr(assistant_msg, 'reasoning_content', None)
+    if not reasoning:
+        psf = getattr(assistant_msg, 'provider_specific_fields', None) or {}
+        if isinstance(psf, dict):
+            reasoning = psf.get('reasoning_content') or psf.get('reasoning')
+    if not reasoning:
+        reasoning = getattr(assistant_msg, 'reasoning', None)
+    return reasoning if reasoning else None
 
 
 class ConversationMemory:
@@ -248,6 +279,10 @@ class ConversationMemory:
                 if assistant_msg.content and assistant_msg.content.strip()
                 else [],
                 tool_calls=assistant_msg.tool_calls,
+                # re-send this turn's reasoning for interleaved reasoning
+                reasoning_content=_extract_reasoning_content(assistant_msg)
+                if INTERLEAVED_REASONING
+                else None,
             )
             return []
         elif isinstance(action, AgentFinishAction):
