@@ -625,11 +625,12 @@ if __name__ == '__main__':
     print(f'### OUTPUT FILE: {output_file} ###')
     instances = prepare_dataset(swe_bench_tests, output_file, args.eval_n_limit)
 
-    if len(instances) > 0 and not isinstance(
-        instances['PASS_TO_PASS'][instances['PASS_TO_PASS'].index[0]], str
-    ):
-        for col in ['PASS_TO_PASS', 'FAIL_TO_PASS']:
-            instances[col] = instances[col].apply(lambda x: str(x))
+    if len(instances) > 0:
+        for col in ('PASS_TO_PASS', 'FAIL_TO_PASS'):
+            if col not in instances.columns:
+                continue
+            if not isinstance(instances[col].iloc[0], str):
+                instances[col] = instances[col].apply(lambda x: str(x))
 
     run_evaluation(
         instances,
