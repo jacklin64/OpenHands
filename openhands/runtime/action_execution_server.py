@@ -67,6 +67,11 @@ from openhands.runtime.file_viewer_server import start_file_viewer_server
 from openhands.runtime.mcp.proxy import MCPProxyManager
 from openhands.runtime.plugins import ALL_PLUGINS, JupyterPlugin, Plugin, VSCodePlugin
 from openhands.runtime.utils import find_available_tcp_port
+from openhands.runtime.utils.ad_hoc_cheating_prevention import (
+    BLOCKED_COMMAND_MESSAGE,
+    ad_hoc_cheating_prevention_enabled,
+    command_has_cheating_signal,
+)
 from openhands.runtime.utils.bash import BashSession
 from openhands.runtime.utils.files import insert_lines, read_lines
 from openhands.runtime.utils.memory_monitor import MemoryMonitor
@@ -380,6 +385,19 @@ class ActionExecutor:
             if action.is_static:
                 bash_session = self._create_bash_session(action.cwd)
             assert bash_session is not None
+            if (
+                ad_hoc_cheating_prevention_enabled()
+                and command_has_cheating_signal(action.command)
+            ):
+                logger.warning(
+                    'Blocked command due to ad-hoc cheating prevention: '
+                    f'{action.command}'
+                )
+                return CmdOutputObservation(
+                    content=BLOCKED_COMMAND_MESSAGE,
+                    command=action.command,
+                    metadata={'exit_code': 1},
+                )
             obs = await call_sync_from_async(bash_session.execute, action)
             return obs
         except Exception as e:
