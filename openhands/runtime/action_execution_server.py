@@ -68,6 +68,11 @@ from openhands.runtime.mcp.proxy import MCPProxyManager
 from openhands.runtime.plugins import ALL_PLUGINS, JupyterPlugin, Plugin, VSCodePlugin
 from openhands.runtime.utils import find_available_tcp_port
 from openhands.runtime.utils.bash import BashSession
+from openhands.runtime.utils.ad_hoc_cheating_prevention import (
+    BLOCKED_COMMAND_MESSAGE,
+    ad_hoc_cheating_prevention_enabled,
+    command_has_cheating_signal,
+)
 from openhands.runtime.utils.files import insert_lines, read_lines
 from openhands.runtime.utils.memory_monitor import MemoryMonitor
 from openhands.runtime.utils.runtime_init import init_user_and_working_directory
@@ -376,6 +381,20 @@ class ActionExecutor:
         self, action: CmdRunAction
     ) -> CmdOutputObservation | ErrorObservation:
         try:
+            if (
+                ad_hoc_cheating_prevention_enabled()
+                and command_has_cheating_signal(action.command)
+            ):
+                logger.warning(
+                    'Blocked potentially solution-leaking command due to '
+                    'OPENHANDS_AD_HOC_CHEATING_PREVENTION: %s',
+                    action.command,
+                )
+                return CmdOutputObservation(
+                    content=BLOCKED_COMMAND_MESSAGE,
+                    command=action.command,
+                    metadata={'exit_code': 1},
+                )
             bash_session = self.bash_session
             if action.is_static:
                 bash_session = self._create_bash_session(action.cwd)
