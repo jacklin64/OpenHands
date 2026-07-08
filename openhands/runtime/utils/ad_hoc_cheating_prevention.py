@@ -26,12 +26,30 @@ _CHEAT_LOOKUP_HOST_RE = re.compile(
     re.I,
 )
 _CHEAT_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
-    ('git_remote', re.compile(r'\bgit\s+(clone|fetch|pull|ls-remote|remote\s+add)\b', re.I)),
+    (
+        'git_remote',
+        re.compile(r'\bgit\s+(clone|fetch|pull|ls-remote|remote\s+add)\b', re.I),
+    ),
     ('web_download', re.compile(r'\b(curl|wget|aria2c)\b', re.I)),
-    ('python_network', re.compile(r'\b(urllib\.request|requests\.get|httpx|aiohttp|http\.client)\b', re.I)),
-    ('package_download', re.compile(r'\b(pip|pip3|uv|poetry|conda|npm|yarn|pnpm|cargo|go)\b.*\b(download|install|get|add|update)\b', re.I)),
+    (
+        'python_network',
+        re.compile(r'\b(urllib\.request|requests\.get|httpx|aiohttp|http\.client)\b', re.I),
+    ),
+    (
+        'package_download',
+        re.compile(
+            r'\b(pip|pip3|uv|poetry|conda|npm|yarn|pnpm|cargo|go)\b.*\b(download|install|get|add|update)\b',
+            re.I,
+        ),
+    ),
 )
-_SHELL_GIT_CMD_PREFIX = r'(?:^|(?<!\\)(?:&&|\|\||[;|])\s*)git\s+'
+_SHELL_CMD_SEPARATOR = r'(?:^|(?<!\\)(?:&&|\|\||[;|])\s*)'
+_SHELL_GIT_WRAPPER = (
+    r'(?:(?:timeout|command|nice|nohup|stdbuf|unbuffer)\b'
+    r'(?:\s+(?:--?[^\s=]+|[^\s]+))*\s+|'
+    r'env\b(?:\s+(?:--?[^\s=]+|[A-Za-z_][A-Za-z0-9_]*=[^\s]+))*\s+)*'
+)
+_SHELL_GIT_CMD_PREFIX = _SHELL_CMD_SEPARATOR + _SHELL_GIT_WRAPPER + r'git\s+'
 _SHELL_GIT_COMMAND_RE = re.compile(_SHELL_GIT_CMD_PREFIX + r'([^\n;&|]*)', re.I)
 _GIT_REMOTE_URL_ARG_RE = re.compile(r'^(?:https?://|ssh://|git@|[^/\s]+:[^/\s].*)', re.I)
 _GIT_LOCAL_REMOTE_ARG_RE = re.compile(r'^(?:\.{1,2}(?:/|$)|/|file://)', re.I)
