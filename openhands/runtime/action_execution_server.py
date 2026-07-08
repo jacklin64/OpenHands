@@ -96,6 +96,43 @@ SESSION_API_KEY = os.environ.get('SESSION_API_KEY')
 api_key_header = APIKeyHeader(name='X-Session-API-Key', auto_error=False)
 
 
+def _enable_agent_network_blocking_if_requested() -> None:
+    """Enable socket blocking for future agent command subprocesses.
+
+    This intentionally runs after the action server has initialized. The current
+    Python process can keep serving localhost requests, while newly exec'd tools
+    such as pip/git/curl inherit the preload and lose AF_INET/AF_INET6 access.
+    """
+    if os.environ.get('OPENHANDS_BLOCK_AGENT_NETWORK') != '1':
+        return
+
+    if sys.platform == 'win32':
+        logger.warning('Agent network blocking requested, but it is unsupported on Windows.')
+        return
+
+    lib_path = os.environ.get('OPENHANDS_BLOCK_NETWORK_LIB', '/usr/lib/libblock_network.so')
+    if not os.path.exists(lib_path):
+        logger.warning(
+            'Agent network blocking requested, but block library does not exist: %s',
+            lib_path,
+        )
+        return
+
+    preload_path = '/etc/ld.so.preload'
+    try:
+        with open(preload_path, 'w') as f:
+            f.write(f'{lib_path}\n')
+    except OSError as e:
+        logger.warning(
+            'Agent network blocking requested, but failed to write %s: %s',
+            preload_path,
+            e,
+        )
+        return
+
+    logger.warning('Agent network blocking ENABLED via ld.so.preload: %s', lib_path)
+
+
 def verify_api_key(api_key: str = Depends(api_key_header)):
     if SESSION_API_KEY and api_key != SESSION_API_KEY:
         raise HTTPException(status_code=403, detail='Invalid API Key')
@@ -742,6 +779,8 @@ if __name__ == '__main__':
             except Exception as e:
                 logger.error(f'Error mounting MCP Proxy: {e}', exc_info=True)
                 raise RuntimeError(f'Cannot mount MCP Proxy: {e}')
+
+        _enable_agent_network_blocking_if_requested()
 
         yield
 
