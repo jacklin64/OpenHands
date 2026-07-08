@@ -45,9 +45,12 @@ _CHEAT_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
 )
 _SHELL_CMD_SEPARATOR = r'(?:^|(?<!\\)(?:&&|\|\||[;|])\s*)'
 _SHELL_GIT_WRAPPER = (
-    r'(?:(?:timeout|command|nice|nohup|stdbuf|unbuffer)\b'
-    r'(?:\s+(?:--?[^\s=]+|[^\s]+))*\s+|'
-    r'env\b(?:\s+(?:--?[^\s=]+|[A-Za-z_][A-Za-z0-9_]*=[^\s]+))*\s+)*'
+    r'(?:(?:timeout\b(?:\s+--?[^\s]+)*\s+\S+\s+)|'
+    r'(?:env\b(?:\s+(?:--?[^\s=]+|[A-Za-z_][A-Za-z0-9_]*=[^\s]+))*\s+)|'
+    r'(?:command\b(?:\s+-[^\s]+)*\s+)|'
+    r'(?:nice\b(?:\s+-n\s+\S+|\s+-\d+)?\s+)|'
+    r'(?:stdbuf\b(?:\s+(?:-[ioe]\S*|--[^\s=]+(?:=\S+)?))*\s+)|'
+    r'(?:nohup|unbuffer)\b\s+)*'
 )
 _SHELL_GIT_CMD_PREFIX = _SHELL_CMD_SEPARATOR + _SHELL_GIT_WRAPPER + r'git\s+'
 _SHELL_GIT_COMMAND_RE = re.compile(_SHELL_GIT_CMD_PREFIX + r'([^\n;&|]*)', re.I)

@@ -36,6 +36,19 @@ def test_blocks_remote_git_commands_wrapped_by_timeout():
         'https://github.com/django/django.git '
         'stable/3.0.x:refs/remotes/origin/stable/3.0.x'
     )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cd /tmp/djg && timeout 120 git fetch --depth 200 origin 2>&1 '
+        '| tail -3; git log --oneline --all | wc -l'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cd /tmp/sphinx_git && timeout 300 git fetch '
+        '--shallow-since="2021-06-01" origin 2>&1 | tail -3; '
+        'git log --oneline --all --since="2021-07-01" | head'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cd /tmp/django_ref && timeout 180 git fetch --deepen=8000 '
+        'origin 2>&1 | tail -2; git log --all | tail -3'
+    )
 
 
 def test_blocks_remote_git_commands_wrapped_by_common_launchers():
@@ -47,6 +60,10 @@ def test_blocks_remote_git_commands_wrapped_by_common_launchers():
     )
     assert ad_hoc_cheating_prevention.command_has_cheating_signal(
         'stdbuf -oL git pull upstream main'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'nice -n 10 timeout --preserve-status 30 git ls-remote '
+        'https://github.com/django/django.git'
     )
 
 
