@@ -60,7 +60,7 @@ from openhands.utils.prompt import (
 # reasoning_content but expects a different replay format (e.g. Anthropic
 # thinking_blocks), disable this to avoid injecting a stray `reasoning` key.
 INTERLEAVED_REASONING = os.environ.get(
-    'OPENHANDS_INTERLEAVED_REASONING', '1'
+    'OPENHANDS_INTERLEAVED_REASONING', '0'
 ).lower() in ('1', 'true', 'yes')
 
 
