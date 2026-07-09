@@ -76,6 +76,55 @@ def test_allows_local_git_history_inspection_without_remote_lookup():
     )
 
 
+def test_blocks_huggingface_dataset_access():
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        "python -c \"from datasets import load_dataset; "
+        "ds = load_dataset('princeton-nlp/SWE-bench_Verified', split='test')\""
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        '/root_mount/SWE-bench/venv/bin/python -c "'
+        'from datasets import load_dataset; '
+        "load_dataset('princeton-nlp/swe-bench_verified', split='test')\""
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        "python -c \"from huggingface_hub import snapshot_download; "
+        "snapshot_download('princeton-nlp/SWE-bench_Verified')\""
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'curl -L https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified'
+    )
+
+
+def test_blocks_swebench_huggingface_dataset_namespaces():
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        "python -c \"from datasets import load_dataset; "
+        "load_dataset('SWE-bench/SWE-bench_Multilingual')\""
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'python -c "print(\'AweAI-Team/scale-swe\')"'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'python -c "print(\'nebius/SWE-bench-extra\')"'
+    )
+
+
+def test_blocks_huggingface_cache_access():
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'ls /root/.cache/huggingface/datasets/'
+        'princeton-nlp__swe-bench_verified/default/0.0.0/'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'python -c "import pyarrow as pa; '
+        'pa.ipc.open_stream('
+        "'/root/.cache/huggingface/datasets/"
+        "princeton-nlp__swe-bench_verified/default/0.0.0/x/train.arrow'"
+        ').read_all()"'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'HF_DATASETS_CACHE=/tmp/hf python -c "from datasets import load_dataset"'
+    )
+
+
 def test_blocks_python_target_package_downloads(monkeypatch):
     monkeypatch.setenv(
         'OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES', 'django,scikit-learn,sklearn'
