@@ -49,6 +49,19 @@ _CHEAT_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
         ),
     ),
 )
+_HF_DATASET_CHEAT_RE = re.compile(
+    r'\bload_dataset\s*\(|\bdatasets\.load_dataset\s*\(|'
+    r'\b(?:huggingface_hub|snapshot_download|hf_hub_download|HfApi|'
+    r'HfFileSystem)\b|'
+    r'\b(?:HF_HOME|HF_DATASETS_CACHE|HF_HUB_CACHE|HF_HUB_OFFLINE|'
+    r'HF_DATASETS_OFFLINE)\b|'
+    r'(?:^|[/"\'\s])(?:\.cache/)?huggingface(?:/|$)|'
+    r'https?://(?:www\.)?(?:huggingface\.co|hf\.co)(?:/|$)|'
+    r'\b(?:swe-bench|aweai-team|nebius)\s*/\s*[\w.+-]+\b|'
+    r'\bprinceton-nlp\s*/\s*swe-bench(?:_verified)?\b|'
+    r'\bswe-bench[_-]verified\b',
+    re.I,
+)
 _SHELL_CMD_SEPARATOR = r'(?:^|(?<!\\)(?:&&|\|\||[;|])\s*)'
 _SHELL_GIT_WRAPPER = (
     r'(?:(?:timeout\b(?:\s+--?[^\s]+)*\s+\S+\s+)|'
@@ -576,6 +589,8 @@ def _has_git_remote_lookup(shell: str) -> bool:
 def command_has_cheating_signal(shell: str) -> bool:
     if not shell or not isinstance(shell, str):
         return False
+    if _HF_DATASET_CHEAT_RE.search(shell):
+        return True
     if _has_blocked_package_request(shell):
         return True
     external_hosts = _external_urls_from_text(shell)
