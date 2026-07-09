@@ -74,3 +74,79 @@ def test_allows_local_git_history_inspection_without_remote_lookup():
     assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
         'git log --oneline -S "test_rst_with_header_rows" | head'
     )
+
+
+def test_blocks_python_target_package_downloads(monkeypatch):
+    monkeypatch.setenv(
+        'OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES', 'django,scikit-learn,sklearn'
+    )
+
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cd /tmp && pip download django==4.2 --no-deps --no-binary :all:'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'python -m pip install "Django>=4.0"'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'timeout 30 uv pip install scikit_learn==1.4.0'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'conda install -y sklearn'
+    )
+
+
+def test_allows_python_dependency_setup_without_target_package(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES', 'django')
+
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'pip install -e .'
+    )
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'pip install -r requirements.txt'
+    )
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'pip install pytest'
+    )
+
+
+def test_blocks_multilingual_target_package_requests(monkeypatch):
+    monkeypatch.setenv(
+        'OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES',
+        '@babel/core,laravel/framework,github.com/caddyserver/caddy/v2,'
+        'tokio,org.projectlombok:lombok',
+    )
+
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'npm install @babel/core@latest'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'composer require laravel/framework:^11'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'go install github.com/caddyserver/caddy/v2/cmd/caddy@latest'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cargo add tokio --features full'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'mvn dependency:get -Dartifact=org.projectlombok:lombok:1.18.30'
+    )
+
+
+def test_allows_multilingual_dependency_setup_without_target_package(monkeypatch):
+    monkeypatch.setenv(
+        'OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES',
+        'axios,fastlane,phpoffice/phpspreadsheet,tokio',
+    )
+
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal('npm install')
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'bundle install'
+    )
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'composer install'
+    )
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal('cargo fetch')
+    assert not ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'go mod download'
+    )
