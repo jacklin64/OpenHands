@@ -95,6 +95,20 @@ def test_blocks_python_target_package_downloads(monkeypatch):
     )
 
 
+def test_blocks_target_package_downloads_inside_shell_control_flow(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES', 'sympy,django')
+
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        'cd /tmp && for v in 1.9 1.10 1.11; do '
+        'timeout 120 pip download "sympy==$v" --no-deps '
+        '--no-binary :all: -d /tmp/sympy_$v 2>&1 | tail -1; '
+        'done; ls /tmp/sympy_*/sympy-*.tar.gz 2>/dev/null'
+    )
+    assert ad_hoc_cheating_prevention.command_has_cheating_signal(
+        "bash -lc 'cd /tmp && python -m pip download django==4.2 --no-deps'"
+    )
+
+
 def test_allows_python_dependency_setup_without_target_package(monkeypatch):
     monkeypatch.setenv('OPENHANDS_AD_HOC_BLOCKED_PACKAGE_NAMES', 'django')
 

@@ -4,6 +4,11 @@ import os
 import re
 import shlex
 
+try:
+    import bashlex
+except ImportError:  # pragma: no cover - bashlex is an OpenHands dependency.
+    bashlex = None
+
 
 BLOCKED_COMMAND_MESSAGE = (
     'We cannot execute the commands which potentially leak the solutions.'
@@ -206,6 +211,7 @@ def _shlex_split_best_effort(command: str) -> list[str]:
 
 def _iter_shell_commands(shell: str) -> list[list[str]]:
     commands: list[list[str]] = []
+    commands.extend(_iter_bashlex_shell_commands(shell))
     for match in _SHELL_COMMAND_RE.finditer(shell):
         args = _shlex_split_best_effort(match.group(1))
         if args:
@@ -214,6 +220,49 @@ def _iter_shell_commands(shell: str) -> list[list[str]]:
         args = _shlex_split_best_effort(shell)
         if args:
             commands.append(args)
+    return commands
+
+
+def _iter_bashlex_shell_commands(shell: str) -> list[list[str]]:
+    if bashlex is None:
+        return []
+    try:
+        nodes = list(bashlex.parse(shell))
+    except (
+        bashlex.errors.ParsingError,
+        NotImplementedError,
+        TypeError,
+        AttributeError,
+    ):
+        return []
+
+    commands: list[list[str]] = []
+
+    def visit(node) -> None:
+        if getattr(node, 'kind', None) == 'command':
+            words = [
+                shell[part.pos[0] : part.pos[1]]
+                for part in getattr(node, 'parts', [])
+                if getattr(part, 'kind', None) == 'word'
+            ]
+            if words:
+                args = _shlex_split_best_effort(' '.join(words))
+                if args:
+                    commands.append(args)
+        for part in getattr(node, 'parts', []):
+            visit(part)
+        for attr in ('command', 'list'):
+            child = getattr(node, attr, None)
+            if child is None:
+                continue
+            if isinstance(child, list):
+                for item in child:
+                    visit(item)
+            else:
+                visit(child)
+
+    for node in nodes:
+        visit(node)
     return commands
 
 
@@ -266,6 +315,9 @@ def _strip_common_launch_wrappers(args: list[str]) -> list[str]:
     args = list(args)
     while args:
         cmd = os.path.basename(args[0]).lower()
+        if cmd in {'do', 'then'}:
+            args = args[1:]
+            continue
         if cmd == 'timeout':
             i = 1
             while i < len(args) and args[i].startswith('-'):
@@ -406,10 +458,19 @@ def _has_blocked_package_request(shell: str) -> bool:
     if not blocked:
         return False
     for args in _iter_shell_commands(shell):
+        raw_args = args
         args = _strip_common_launch_wrappers(args)
         if not args:
             continue
         cmd = os.path.basename(args[0]).lower()
+        if cmd in {'bash', 'sh'}:
+            for flag in ('-c', '-lc'):
+                if flag in args:
+                    i = args.index(flag)
+                    if i + 1 < len(args) and _has_blocked_package_request(args[i + 1]):
+                        return True
+            args = _strip_common_launch_wrappers(raw_args)
+            cmd = os.path.basename(args[0]).lower() if args else ''
         if cmd in {'python', 'python3'} and len(args) >= 4 and args[1:3] == ['-m', 'pip']:
             cmd = 'pip'
             args = ['pip', *args[3:]]
