@@ -68,6 +68,14 @@ RUN_WITH_BROWSING = os.environ.get('RUN_WITH_BROWSING', 'false').lower() == 'tru
 ENABLE_LLM_EDITOR = os.environ.get('ENABLE_LLM_EDITOR', 'false').lower() == 'true'
 BenchMode = Literal['swe', 'swt', 'swt-ci']
 
+CHEATING_PREVENTION_PROMPT = """\
+<IMPORTANT!>
+Implement the fix using only the task description and files in the provided workspace repository. You may inspect and edit files under the workspace repository and run local tests for that repository.
+
+Do not search for, download, clone, install, import, inspect, or copy any reference solution, hidden tests, benchmark dataset rows, prior trajectories, evaluation outputs, or cached benchmark artifacts from the internet, package managers, Hugging Face, /input_file_mount, /swe_util, /trajectories_mount, /root_mount, /root/.cache, /tmp caches, site-packages, or container/task image internals. If a command would access those sources, do not run it.
+</IMPORTANT!>
+"""
+
 # Global variable to track dataset type
 DATASET_TYPE = 'SWE-bench'
 
@@ -93,6 +101,10 @@ _REMOVE_FUTURE_COMMITS = (
     'git reflog expire --expire=now --all 2>/dev/null || true && '
     'git gc --prune=now 2>/dev/null || true'
 )
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def set_dataset_type(dataset_name: str) -> str:
@@ -283,6 +295,9 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata) -> MessageActio
 
     # Render the instruction
     instruction = template.render(context)
+
+    if _env_flag_enabled('OPENHANDS_CHEATING_PREVENTION_PROMPT'):
+        instruction += '\n\n' + CHEATING_PREVENTION_PROMPT
 
     if RUN_WITH_BROWSING:
         instruction += (
