@@ -50,6 +50,14 @@ USE_HINT_TEXT = os.environ.get('USE_HINT_TEXT', 'false').lower() == 'true'
 USE_INSTANCE_IMAGE = os.environ.get('USE_INSTANCE_IMAGE', 'true').lower() == 'true'
 RUN_WITH_BROWSING = os.environ.get('RUN_WITH_BROWSING', 'false').lower() == 'true'
 
+CHEATING_PREVENTION_PROMPT = """\
+<IMPORTANT!>
+Implement the fix using only the task description and files in the provided workspace repository. You may inspect and edit files under the workspace repository and run local tests for that repository.
+
+Do not search for, download, clone, install, import, inspect, or copy any reference solution, hidden tests, benchmark dataset rows, prior trajectories, evaluation outputs, or cached benchmark artifacts from the internet, package managers, Hugging Face, /input_file_mount, /swe_util, /trajectories_mount, /root_mount, /root/.cache, /tmp caches, site-packages, or container/task image internals. If a command would access those sources, do not run it.
+</IMPORTANT!>
+"""
+
 # TODO: migrate all swe-bench docker to ghcr.io/openhands
 # TODO: 适应所有的语言
 DOCKER_IMAGE_PREFIX = os.environ.get('EVAL_DOCKER_IMAGE_PREFIX', '')
@@ -162,6 +170,10 @@ def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
             return f'{instance.repo}__{ver}'.replace('/', '__')
         return str(instance['instance_id']).replace('/', '__')
     return f'{instance.repo}__{instance.version}'.replace('/', '__')
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _get_instance_base_commit(instance: pd.Series) -> str:
@@ -717,6 +729,9 @@ def get_instruction(instance: pd.Series, metadata: EvalMetadata):
     lang_key = _aliases.get(lang_key, lang_key)
 
     instruction = instructions.get(lang_key, default_instruction)
+
+    if instruction and _env_flag_enabled('OPENHANDS_CHEATING_PREVENTION_PROMPT'):
+        instruction += '\n\n' + CHEATING_PREVENTION_PROMPT
 
     if instruction and RUN_WITH_BROWSING:
         instruction += (
