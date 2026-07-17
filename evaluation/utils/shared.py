@@ -38,6 +38,7 @@ from openhands.events.action.message import MessageAction
 from openhands.events.event import Event
 from openhands.events.serialization.event import event_to_dict
 from openhands.events.utils import get_pairs_from_events
+from openhands.llm.llm import LLM_RETRY_EXCEPTIONS
 from openhands.memory.condenser import get_condensation_metadata
 
 
@@ -638,6 +639,7 @@ def is_fatal_evaluation_error(error: str | None) -> bool:
         AgentRuntimeDisconnectedError,
         AgentRuntimeNotFoundError,
         ConnectionError,
+        *LLM_RETRY_EXCEPTIONS,
     ]
 
     if any(exception.__name__ in error for exception in FATAL_EXCEPTIONS):
