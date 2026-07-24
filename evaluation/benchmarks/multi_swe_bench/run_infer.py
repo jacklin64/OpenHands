@@ -39,7 +39,7 @@ from openhands.core.config import (
 )
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.main import create_runtime, run_controller
-from openhands.events.action import CmdRunAction, FileReadAction, MessageAction
+from openhands.events.action import CmdRunAction, MessageAction
 from openhands.events.observation import CmdOutputObservation, ErrorObservation
 from openhands.events.serialization.event import event_to_dict
 from openhands.runtime.base import Runtime
@@ -1158,10 +1158,11 @@ def complete_runtime(
         else:
             assert_and_raise(False, f'Unexpected observation type: {str(obs)}')
 
-    action = FileReadAction(path='patch.diff')
+    action = CmdRunAction(command='cat patch.diff')
     action.set_hard_timeout(max(300 + 100 * n_retries, 600))
     logger.info(action, extra={'msg_type': 'ACTION'})
     obs = runtime.run_action(action)
+    assert isinstance(obs, CmdOutputObservation) and obs.exit_code == 0
     git_patch = obs.content
     # pdb.set_trace()
 

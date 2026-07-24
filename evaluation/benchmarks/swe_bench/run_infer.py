@@ -51,11 +51,10 @@ from openhands.core.config.utils import get_condenser_config_arg
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.main import create_runtime, run_controller
 from openhands.critic import AgentFinishedCritic
-from openhands.events.action import CmdRunAction, FileReadAction, MessageAction
+from openhands.events.action import CmdRunAction, MessageAction
 from openhands.events.observation import (
     CmdOutputObservation,
     ErrorObservation,
-    FileReadObservation,
 )
 from openhands.events.serialization.event import event_from_dict, event_to_dict
 from openhands.runtime.base import Runtime
@@ -567,13 +566,13 @@ def complete_runtime(
         n_retries += 1
         if isinstance(obs, CmdOutputObservation):
             if obs.exit_code == 0:
-                # Read the patch file
-                action = FileReadAction(path='patch.diff')
+                # Read the patch file from the same shell cwd that created it.
+                action = CmdRunAction(command='cat patch.diff')
                 action.set_hard_timeout(max(300 + 100 * n_retries, 600))
                 logger.info(action, extra={'msg_type': 'ACTION'})
                 obs = runtime.run_action(action)
                 logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-                if isinstance(obs, FileReadObservation):
+                if isinstance(obs, CmdOutputObservation) and obs.exit_code == 0:
                     git_patch = obs.content
                     break
                 elif isinstance(obs, ErrorObservation):
