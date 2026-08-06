@@ -1,3 +1,4 @@
+import locale
 import os
 import re
 import time
@@ -208,6 +209,37 @@ def _ensure_usable_shell_env() -> None:
         os.environ['SHELL'] = _FALLBACK_SHELL
 
 
+def _ensure_utf8_locale_env() -> None:
+    """Force a UTF-8 locale when the configured one is missing or non-UTF-8.
+
+    tmux >= 3.1 replaces non-ASCII bytes in format output with underscores
+    when the locale is not UTF-8, and libtmux separates format fields with a
+    non-ASCII record separator. Under a C/POSIX locale (or an unavailable one
+    such as LANG=en_US.UTF-8 on images without generated locales), tmux
+    mangles the separator, libtmux cannot parse list-sessions output, and
+    Session.from_session_id raises TmuxObjectDoesNotExist even though the
+    session was created (seen on SWE-bench Pro openlibrary images, the only
+    ones shipping tmux 3.3a). C.UTF-8 is built into glibc and musl, so no
+    locale generation is needed.
+    """
+    try:
+        prev = locale.setlocale(locale.LC_CTYPE)
+        try:
+            locale.setlocale(locale.LC_CTYPE, '')
+            codeset = locale.nl_langinfo(locale.CODESET)
+        finally:
+            locale.setlocale(locale.LC_CTYPE, prev)
+    except locale.Error:
+        codeset = ''
+    if codeset.upper().replace('-', '') != 'UTF8':
+        logger.warning(
+            f'Locale codeset {codeset!r} is not UTF-8; forcing LC_ALL=LANG=C.UTF-8 '
+            'so tmux does not mangle libtmux format separators.'
+        )
+        os.environ['LC_ALL'] = 'C.UTF-8'
+        os.environ['LANG'] = 'C.UTF-8'
+
+
 class BashSession:
     POLL_INTERVAL = 0.5
     HISTORY_LIMIT = 10_000
@@ -228,6 +260,7 @@ class BashSession:
 
     def initialize(self) -> None:
         _ensure_usable_shell_env()
+        _ensure_utf8_locale_env()
         self.server = libtmux.Server()
         _shell_command = '/bin/bash'
         if self.username in ['root', 'openhands']:

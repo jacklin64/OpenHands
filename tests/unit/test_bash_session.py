@@ -8,6 +8,7 @@ from openhands.runtime.utils.bash import (
     BashCommandStatus,
     BashSession,
     _ensure_usable_shell_env,
+    _ensure_utf8_locale_env,
 )
 from openhands.runtime.utils.bash_constants import TIMEOUT_MESSAGE_TEMPLATE
 
@@ -54,6 +55,39 @@ def test_ensure_usable_shell_env(monkeypatch):
         monkeypatch.setenv('SHELL', usable)
         _ensure_usable_shell_env()
         assert os.environ['SHELL'] == usable
+
+
+def test_ensure_utf8_locale_env(monkeypatch):
+    # C/POSIX (and unavailable) locales must be replaced with C.UTF-8, since
+    # tmux >= 3.1 mangles libtmux's non-ASCII format separator under them.
+    for broken in ['POSIX', 'C', 'xx_XX.UTF-8']:
+        monkeypatch.setenv('LC_ALL', broken)
+        monkeypatch.setenv('LANG', broken)
+        _ensure_utf8_locale_env()
+        assert os.environ['LC_ALL'] == 'C.UTF-8'
+        assert os.environ['LANG'] == 'C.UTF-8'
+
+    # A working UTF-8 locale is left untouched.
+    monkeypatch.setenv('LC_ALL', 'C.UTF-8')
+    monkeypatch.setenv('LANG', 'C.UTF-8')
+    _ensure_utf8_locale_env()
+    assert os.environ['LC_ALL'] == 'C.UTF-8'
+    assert os.environ['LANG'] == 'C.UTF-8'
+
+
+def test_session_initialization_with_posix_locale(monkeypatch):
+    # LC_ALL=POSIX reaches agent processes on some sandboxes (e.g. via SSH
+    # exec); with tmux 3.3a this made new_session fail despite a healthy
+    # session. The locale guard must keep initialization working.
+    monkeypatch.setenv('LC_ALL', 'POSIX')
+    monkeypatch.setenv('LANG', 'C')
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = BashSession(work_dir=temp_dir)
+        session.initialize()
+        obs = session.execute(CmdRunAction('pwd'))
+        assert temp_dir in obs.content
+        assert '[The command completed with exit code 0.]' in obs.metadata.suffix
+        session.close()
 
 
 def test_session_initialization_with_broken_shell_env(monkeypatch):
