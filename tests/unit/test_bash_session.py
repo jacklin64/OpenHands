@@ -4,7 +4,11 @@ import time
 
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action import CmdRunAction
-from openhands.runtime.utils.bash import BashCommandStatus, BashSession
+from openhands.runtime.utils.bash import (
+    BashCommandStatus,
+    BashSession,
+    _ensure_usable_shell_env,
+)
 from openhands.runtime.utils.bash_constants import TIMEOUT_MESSAGE_TEMPLATE
 
 
@@ -32,6 +36,39 @@ def test_session_initialization():
     session.initialize()
     assert 'openhands-nobody' in session.session.name
     session.close()
+
+
+def test_ensure_usable_shell_env(monkeypatch):
+    # Broken values must be replaced by the fallback shell.
+    for broken in ['/usr/sbin/nologin', '/bin/false', 'bash', '/nonexistent/sh']:
+        monkeypatch.setenv('SHELL', broken)
+        _ensure_usable_shell_env()
+        assert os.environ['SHELL'] == '/bin/bash'
+
+    monkeypatch.delenv('SHELL', raising=False)
+    _ensure_usable_shell_env()
+    assert os.environ['SHELL'] == '/bin/bash'
+
+    # Usable shells must be preserved as-is.
+    for usable in ['/bin/sh', '/bin/bash']:
+        monkeypatch.setenv('SHELL', usable)
+        _ensure_usable_shell_env()
+        assert os.environ['SHELL'] == usable
+
+
+def test_session_initialization_with_broken_shell_env(monkeypatch):
+    # Task images may give the invoking user a non-interactive shell (e.g.
+    # nologin on SWE-bench Pro openlibrary images). tmux would then kill the
+    # initial session window instantly and new_session would fail with
+    # TmuxObjectDoesNotExist before any command could run.
+    monkeypatch.setenv('SHELL', '/bin/false')
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = BashSession(work_dir=temp_dir)
+        session.initialize()
+        obs = session.execute(CmdRunAction('pwd'))
+        assert temp_dir in obs.content
+        assert '[The command completed with exit code 0.]' in obs.metadata.suffix
+        session.close()
 
 
 def test_cwd_property(tmp_path):

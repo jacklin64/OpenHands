@@ -172,6 +172,42 @@ def _remove_command_prefix(command_output: str, command: str) -> str:
     return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
 
 
+_FALLBACK_SHELL = '/bin/bash'
+_NON_INTERACTIVE_SHELLS = frozenset(
+    {
+        '/usr/sbin/nologin',
+        '/sbin/nologin',
+        '/usr/bin/false',
+        '/bin/false',
+    }
+)
+
+
+def _ensure_usable_shell_env() -> None:
+    """Pin $SHELL to a usable shell before the tmux server starts.
+
+    tmux resolves its default shell from $SHELL, then the invoking user's
+    passwd entry, then /bin/sh. Non-interactive shells such as
+    /usr/sbin/nologin pass tmux's executability check but exit immediately,
+    killing the initial session window so fast that new_session fails with
+    TmuxObjectDoesNotExist (seen on SWE-bench Pro openlibrary images whose
+    root account has a nologin shell). $SHELL takes precedence over the
+    passwd entry, so pinning it here covers both sources.
+    """
+    shell = os.environ.get('SHELL')
+    if (
+        not shell
+        or not shell.startswith('/')
+        or shell in _NON_INTERACTIVE_SHELLS
+        or not os.access(shell, os.X_OK)
+    ):
+        logger.warning(
+            f'SHELL={shell!r} is not usable as a tmux default shell; '
+            f'falling back to {_FALLBACK_SHELL}.'
+        )
+        os.environ['SHELL'] = _FALLBACK_SHELL
+
+
 class BashSession:
     POLL_INTERVAL = 0.5
     HISTORY_LIMIT = 10_000
@@ -191,11 +227,14 @@ class BashSession:
         self.max_memory_mb = max_memory_mb
 
     def initialize(self) -> None:
+        _ensure_usable_shell_env()
         self.server = libtmux.Server()
         _shell_command = '/bin/bash'
         if self.username in ['root', 'openhands']:
-            # This starts a non-login (new) shell for the given user
-            _shell_command = f'su {self.username} -'
+            # This starts a login shell for the given user. -s overrides the
+            # account's passwd shell, which may be non-interactive (e.g.
+            # nologin) on hardened task images.
+            _shell_command = f'su -s /bin/bash - {self.username}'
 
         # FIXME: we will introduce memory limit using sysbox-runc in coming PR
         # # otherwise, we are running as the CURRENT USER (e.g., when running LocalRuntime)
