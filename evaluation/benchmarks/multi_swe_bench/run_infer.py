@@ -211,11 +211,28 @@ def _is_swe_bench_pro_instance(instance: pd.Series) -> bool:
     return False
 
 
+def _is_deepswe_instance(instance: pd.Series) -> bool:
+    """True for DeepSWE JSONL rows (repo baked at ``/app`` in instance SIFs, Harbor verifier).
+
+    Same runtime shape as SWE-bench-Pro (per-instance Apptainer .sif, no Docker instance
+    image, repo pre-checked-out at /app) -- rows just don't have repo_name/dockerhub_tag.
+    """
+    for key in ('source', 'dataset_name'):
+        val = instance.get(key)
+        if isinstance(val, str) and 'deep-swe' in val.lower():
+            return True
+    return False
+
+
 def _uses_in_place_task_repo(instance: pd.Series) -> bool:
     """Use the image-baked repo path instead of copying into ``/workspace``."""
     if USE_INSTANCE_IMAGE:
         return False
-    if _is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro':
+    if (
+        _is_swe_bench_pro_instance(instance)
+        or _is_deepswe_instance(instance)
+        or DATASET_TYPE == 'SWE-bench-Pro'
+    ):
         return True
     if _is_swe_universe_instance(instance):
         workdir = instance.get('workdir')
@@ -227,7 +244,11 @@ def _get_task_repo_path(instance: pd.Series) -> str:
     """Absolute path to the task repo for git prep and agent ``cd``."""
     if not _uses_in_place_task_repo(instance):
         return f'/workspace/{_get_swebench_workspace_dir_name(instance)}'
-    if _is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro':
+    if (
+        _is_swe_bench_pro_instance(instance)
+        or _is_deepswe_instance(instance)
+        or DATASET_TYPE == 'SWE-bench-Pro'
+    ):
         return '/app'
     workdir = instance.get('workdir')
     if isinstance(workdir, str) and workdir.strip():
@@ -238,7 +259,11 @@ def _get_task_repo_path(instance: pd.Series) -> str:
 def _uses_light_repo_prep(instance: pd.Series) -> bool:
     return _is_swe_universe_instance(instance) or (
         _uses_in_place_task_repo(instance)
-        and (_is_swe_bench_pro_instance(instance) or DATASET_TYPE == 'SWE-bench-Pro')
+        and (
+            _is_swe_bench_pro_instance(instance)
+            or _is_deepswe_instance(instance)
+            or DATASET_TYPE == 'SWE-bench-Pro'
+        )
     )
 
 
